@@ -230,7 +230,7 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 		}),
 	}
 
-	log.Println("CardDAV server listening on", s.Addr)
+	log.Println("CalDAV server listening on", s.Addr)
 	return s.ListenAndServe()
 }
 
