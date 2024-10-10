@@ -191,11 +191,12 @@ func listenAndServeIMAP(addr string, debug bool, authManager *auth.Manager, even
 	return s.ListenAndServe()
 }
 
-func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager) error {
+func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config) error {
 	handlers := make(map[string]http.Handler)
 
 	s := &http.Server{
-		Addr: addr,
+		Addr:      addr,
+		TLSConfig: tlsConfig,
 		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 			resp.Header().Set("WWW-Authenticate", "Basic")
 
@@ -296,6 +297,7 @@ const usage = `usage: hydroxide [options...] <command>
 Commands:
 	auth [options...] <username>	Login to ProtonMail via hydroxide
 	carddav			Run hydroxide as a CardDAV server
+	caldav			Run hydroxide as a CalDAV server
 	export-secret-keys <username> Export secret keys
 	imap			Run hydroxide as an IMAP server
 	import-messages <username> [file]	Import messages
@@ -342,6 +344,10 @@ func main() {
 	carddavHost := flag.String("carddav-host", "127.0.0.1", "Allowed CardDAV email hostname on which hydroxide listens, defaults to 127.0.0.1")
 	carddavPort := flag.String("carddav-port", "8080", "CardDAV port on which hydroxide listens, defaults to 8080")
 	disableCardDAV := flag.Bool("disable-carddav", false, "Disable CardDAV for hydroxide serve")
+
+	caldavHost := flag.String("caldav-host", "127.0.0.1", "Allowed CalDAV email hostname on which hydroxide listens, defaults to 127.0.0.1")
+	caldavPort := flag.String("caldav-port", "8081", "CalDAV port on which hydroxide listens, defaults to 8081")
+	disableCalDAV := flag.Bool("disable-caldav", false, "Disable CalDAV for hydroxide serve")
 
 	tlsCert := flag.String("tls-cert", "", "Path to the certificate to use for incoming connections")
 	tlsCertKey := flag.String("tls-key", "", "Path to the certificate key to use for incoming connections")
@@ -640,12 +646,12 @@ func main() {
 		eventsManager := events.NewManager()
 		log.Fatal(listenAndServeIMAP(addr, debug, authManager, eventsManager, tlsConfig))
 	case "caldav":
-		addr := ":8080"
+		addr := *caldavHost + ":" + *caldavPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
-		log.Fatal(listenAndServeCalDAV(addr, authManager, eventsManager))
+		log.Fatal(listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig))
 	case "carddav":
-		addr := *carddavHost + ":" + *carddavPort
+		addr := *caldavHost + ":" + *caldavPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
 		log.Fatal(listenAndServeCardDAV(addr, authManager, eventsManager, tlsConfig))
@@ -653,6 +659,7 @@ func main() {
 		smtpAddr := *smtpHost + ":" + *smtpPort
 		imapAddr := *imapHost + ":" + *imapPort
 		carddavAddr := *carddavHost + ":" + *carddavPort
+		caldavAddr := *caldavHost + ":" + *caldavPort
 
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
@@ -671,6 +678,11 @@ func main() {
 		if !*disableCardDAV {
 			go func() {
 				done <- listenAndServeCardDAV(carddavAddr, authManager, eventsManager, tlsConfig)
+			}()
+		}
+		if !*disableCalDAV {
+			go func() {
+				done <- listenAndServeCalDAV(caldavAddr, authManager, eventsManager, tlsConfig)
 			}()
 		}
 		log.Fatal(<-done)
