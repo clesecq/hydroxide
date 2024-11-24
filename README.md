@@ -20,7 +20,7 @@ run on a server.
 > the handshake) and stops `-debug` from printing passwords, SRP proofs, session
 > tokens and private keys to the log.
 
-hydroxide supports CardDAV, IMAP and SMTP.
+hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
 Rationale:
 
@@ -32,7 +32,7 @@ Feel free to join the IRC channel: #emersion on Libera Chat.
 
 ## How does it work?
 
-hydroxide is a server that translates standard protocols (SMTP, IMAP, CardDAV)
+hydroxide is a server that translates standard protocols (SMTP, IMAP, CardDAV, CalDAV)
 into ProtonMail API requests. It allows you to use your preferred e-mail clients
 and `git-send-email` with ProtonMail.
 
@@ -143,7 +143,7 @@ again.
 hydroxide can be used in multiple modes.
 
 > Don't start hydroxide multiple times, instead you can use `hydroxide serve`.
-> This requires ports 1025 (smtp), 1143 (imap), and 8080 (carddav).
+> This requires ports 1025 (smtp), 1143 (imap), 8080 (carddav) and 8081 (caldav).
 
 ### SMTP
 
@@ -171,6 +171,14 @@ hydroxide carddav
 ```
 
 Tested on GNOME (Evolution) and Android (DAVDroid).
+
+### CalDAV
+
+```shell
+hydroxide caldav
+```
+
+Tested on GNOME (Evolution), Thunderbird, KOrganizer.
 
 ### IMAP
 
