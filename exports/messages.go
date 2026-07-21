@@ -15,7 +15,7 @@ import (
 	"github.com/emersion/hydroxide/protonmail"
 )
 
-func writeMessage(c *protonmail.Client, privateKeys openpgp.KeyRing, w io.Writer, msg *protonmail.Message) error {
+func WriteMessage(c *protonmail.Client, privateKeys openpgp.KeyRing, w io.Writer, msg *protonmail.Message) error {
 	mimeType := msg.MIMEType
 	if mimeType == "" {
 		mimeType = "text/html"
@@ -56,7 +56,7 @@ func ExportMessage(c *protonmail.Client, privateKeys openpgp.KeyRing, w io.Write
 		return fmt.Errorf("failed to fetch message: %v", err)
 	}
 
-	return writeMessage(c, privateKeys, w, msg)
+	return WriteMessage(c, privateKeys, w, msg)
 }
 
 func ExportMessageMbox(c *protonmail.Client, privateKeys openpgp.KeyRing, mbox *mbox.Writer, id string) error {
@@ -70,7 +70,7 @@ func ExportMessageMbox(c *protonmail.Client, privateKeys openpgp.KeyRing, mbox *
 		return fmt.Errorf("failed to create mbox message: %v", err)
 	}
 
-	return writeMessage(c, privateKeys, w, msg)
+	return WriteMessage(c, privateKeys, w, msg)
 }
 
 func ExportConversationMbox(c *protonmail.Client, privateKeys openpgp.KeyRing, mbox *mbox.Writer, id string) error {

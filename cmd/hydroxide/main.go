@@ -33,6 +33,7 @@ import (
 	"github.com/emersion/hydroxide/config"
 	"github.com/emersion/hydroxide/events"
 	"github.com/emersion/hydroxide/exports"
+	"github.com/emersion/hydroxide/fetchmail"
 	imapbackend "github.com/emersion/hydroxide/imap"
 	"github.com/emersion/hydroxide/imports"
 	"github.com/emersion/hydroxide/protonmail"
@@ -302,6 +303,7 @@ Commands:
 	imap			Run hydroxide as an IMAP server
 	import-messages <username> [file]	Import messages
 	export-messages [options...] <username>	Export messages
+	fetchmail [options...] <username>	Forward newly detected mail to an SMTP server
 	sendmail <username> -- <args...>	sendmail(1) interface
 	serve			Run all servers
 	smtp			Run hydroxide as an SMTP server
@@ -328,7 +330,7 @@ Options for "auth login":
 
 Environment variables:
 	HYDROXIDE_BRIDGE_PASS	Don't prompt for the bridge password, use this variable instead
-
+	HYDROXIDE_FETCHMAIL_SMTP_PASS	Don't prompt for the fetchmail outbound SMTP relay password, use this variable instead (unrelated to HYDROXIDE_BRIDGE_PASS)
 `
 
 func main() {
@@ -365,6 +367,7 @@ func main() {
 	importMessagesCmd := flag.NewFlagSet("import-messages", flag.ExitOnError)
 	exportMessagesCmd := flag.NewFlagSet("export-messages", flag.ExitOnError)
 	sendmailCmd := flag.NewFlagSet("sendmail", flag.ExitOnError)
+	fetchmailCmd := flag.NewFlagSet("fetchmail", flag.ExitOnError)
 
 	flag.Usage = func() {
 		fmt.Print(usage)
@@ -779,6 +782,105 @@ func main() {
 		}
 	case "version":
 		fmt.Println(versionString())
+	case "fetchmail":
+		var folders, rcpt, idfile, smtpHost, smtpPort, smtpUser, envelopeFrom string
+		var all, markSeen, smtpStartTLS bool
+		var deleteAfterDays int
+		var daemonInterval time.Duration
+
+		fetchmailCmd.StringVar(&folders, "folder", "Inbox", "comma-separated list of Proton folders to poll")
+		fetchmailCmd.BoolVar(&all, "all", false, "forward all messages in scope, ignoring the dedup state")
+		fetchmailCmd.StringVar(&idfile, "idfile", "", "path to the fetchmail state file (default: <config dir>/<username>-fetchids.json)")
+		fetchmailCmd.BoolVar(&markSeen, "markseen", false, "mark forwarded messages as read in Proton")
+		fetchmailCmd.IntVar(&deleteAfterDays, "deleteafter", 0, "delete messages from Proton this many days after they were forwarded (0 disables)")
+		fetchmailCmd.StringVar(&smtpHost, "smtp-host", "", "outbound SMTP relay hostname (required)")
+		fetchmailCmd.StringVar(&smtpPort, "smtp-port", "25", "outbound SMTP relay port")
+		fetchmailCmd.BoolVar(&smtpStartTLS, "smtp-starttls", true, "use STARTTLS with the outbound SMTP relay if offered")
+		fetchmailCmd.StringVar(&smtpUser, "smtp-user", "", "username for outbound SMTP relay authentication (optional, unrelated to the bridge password)")
+		fetchmailCmd.StringVar(&envelopeFrom, "envelope-from", "", "override the SMTP envelope sender (default: the message's own sender)")
+		fetchmailCmd.StringVar(&rcpt, "rcpt", "", "comma-separated list of recipients (default: the message's own To/Cc/Bcc)")
+		fetchmailCmd.DurationVar(&daemonInterval, "daemon", 0, "run continuously, polling every interval (e.g. 1m); default runs once and exits")
+		fetchmailCmd.Parse(flag.Args()[1:])
+
+		username := fetchmailCmd.Arg(0)
+		if username == "" || smtpHost == "" {
+			log.Fatal("usage: hydroxide fetchmail -smtp-host <host> [options...] <username>")
+		}
+
+		labels, err := fetchmail.ResolveFolders(strings.Split(folders, ","))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if idfile == "" {
+			idfile, err = config.Path(username + "-fetchids.json")
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		var rcptList []string
+		if rcpt != "" {
+			rcptList = strings.Split(rcpt, ",")
+		}
+
+		// The outbound SMTP relay password is a separate secret from the
+		// Proton bridge password below: it authenticates to whatever relay
+		// -smtp-host points at, and is only needed if -smtp-user is set.
+		var smtpPass string
+		if smtpUser != "" {
+			if v := os.Getenv("HYDROXIDE_FETCHMAIL_SMTP_PASS"); v != "" {
+				smtpPass = v
+			} else {
+				pass, err := askPass("SMTP relay password")
+				if err != nil {
+					log.Fatal(err)
+				}
+				smtpPass = string(pass)
+			}
+		}
+
+		// The Proton bridge password is always required, regardless of
+		// whether the SMTP relay needs authentication.
+		bridgePassword, err := askBridgePass()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		c, privateKeys, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		cfg := &fetchmail.Config{
+			Folders:         labels,
+			All:             all,
+			MarkSeen:        markSeen,
+			DeleteAfterDays: deleteAfterDays,
+			SMTPHost:        smtpHost,
+			SMTPPort:        smtpPort,
+			SMTPStartTLS:    smtpStartTLS,
+			SMTPUser:        smtpUser,
+			SMTPPass:        smtpPass,
+			EnvelopeFrom:    envelopeFrom,
+			Rcpt:            rcptList,
+		}
+
+		if daemonInterval <= 0 {
+			// Cron mode: run a single pass and exit. The state file at
+			// idfile makes repeated invocations (e.g. from cron) safe.
+			if err := fetchmail.RunOnce(c, privateKeys, idfile, cfg); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			log.Printf("fetchmail running as a daemon, polling every %v", daemonInterval)
+			for {
+				if err := fetchmail.RunOnce(c, privateKeys, idfile, cfg); err != nil {
+					log.Println("fetchmail pass failed:", err)
+				}
+				time.Sleep(daemonInterval)
+			}
+		}
 	default:
 		fmt.Print(usage)
 		if cmd != "help" {

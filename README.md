@@ -213,6 +213,39 @@ For now, it only supports unencrypted local connections.
 hydroxide imap
 ```
 
+### Fetchmail
+
+Instead of waiting for an e-mail client to connect, `hydroxide fetchmail` polls
+one or more ProtonMail folders and forwards newly detected mail to an external
+SMTP server, similar to the classic Unix `fetchmail` tool (just targeting SMTP
+instead of a local mailbox).
+
+```shell
+hydroxide fetchmail -smtp-host mail.example.com <username>
+```
+
+By default it runs a single pass and exits, making it a good fit for a cron
+job or systemd timer; each run only forwards mail it hasn't forwarded yet,
+using a small on-disk state file (similar to fetchmail's own UID list file,
+see `-idfile`). Pass `-daemon <interval>` (e.g. `-daemon 5m`) to instead run
+continuously, polling on that interval.
+
+The first run forwards the full backlog of the configured folder(s) (default:
+`Inbox`); use `-all` on a later run to ignore the state file and re-forward
+everything again.
+
+hydroxide never modifies your ProtonMail mailbox unless you opt in:
+`-markseen` marks forwarded messages as read, and `-deleteafter <days>`
+deletes a message from ProtonMail once it has been sitting in the state file
+as forwarded for that many days (a message that failed to forward is never
+deleted, since it's never recorded as forwarded).
+
+Run `hydroxide fetchmail -h` for the full list of options (folders, SMTP
+relay authentication/TLS, envelope overrides, etc). Note that the SMTP relay
+password (if the relay requires auth) is a separate secret from your
+ProtonMail bridge password — set it with `HYDROXIDE_FETCHMAIL_SMTP_PASS` if
+you don't want to be prompted for it.
+
 ## Docker
 
 Build the image from a checkout:
