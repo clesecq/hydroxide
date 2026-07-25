@@ -27,7 +27,7 @@ func WriteMessage(c *protonmail.Client, privateKeys openpgp.KeyRing, w io.Writer
 		return fmt.Errorf("failed to read message header: %v", err)
 	}
 
-	mh := mail.Header{message.Header{th}}
+	mh := mail.Header{Header: message.Header{Header: th}}
 	mh.SetContentType(mimeType, map[string]string{"charset": "utf-8"})
 	mh.Set("Content-Transfer-Encoding", "quoted-printable")
 
