@@ -784,7 +784,7 @@ func main() {
 		fmt.Println(versionString())
 	case "fetchmail":
 		var folders, rcpt, idfile, smtpHost, smtpPort, smtpUser, envelopeFrom string
-		var all, markSeen, smtpStartTLS bool
+		var all, markSeen, smtpStartTLS, lmtp bool
 		var deleteAfterDays int
 		var daemonInterval time.Duration
 
@@ -793,10 +793,11 @@ func main() {
 		fetchmailCmd.StringVar(&idfile, "idfile", "", "path to the fetchmail state file (default: <config dir>/<username>-fetchids.json)")
 		fetchmailCmd.BoolVar(&markSeen, "markseen", false, "mark forwarded messages as read in Proton")
 		fetchmailCmd.IntVar(&deleteAfterDays, "deleteafter", 0, "delete messages from Proton this many days after they were forwarded (0 disables)")
-		fetchmailCmd.StringVar(&smtpHost, "smtp-host", "", "outbound SMTP relay hostname (required)")
-		fetchmailCmd.StringVar(&smtpPort, "smtp-port", "25", "outbound SMTP relay port")
-		fetchmailCmd.BoolVar(&smtpStartTLS, "smtp-starttls", true, "use STARTTLS with the outbound SMTP relay if offered")
-		fetchmailCmd.StringVar(&smtpUser, "smtp-user", "", "username for outbound SMTP relay authentication (optional, unrelated to the bridge password)")
+		fetchmailCmd.StringVar(&smtpHost, "smtp-host", "", "outbound relay hostname (required)")
+		fetchmailCmd.StringVar(&smtpPort, "smtp-port", "25", "outbound relay port")
+		fetchmailCmd.BoolVar(&smtpStartTLS, "smtp-starttls", true, "use STARTTLS with the outbound relay if offered (SMTP only, no effect with -lmtp)")
+		fetchmailCmd.StringVar(&smtpUser, "smtp-user", "", "username for outbound relay authentication (optional, unrelated to the bridge password)")
+		fetchmailCmd.BoolVar(&lmtp, "lmtp", false, "deliver via LMTP instead of SMTP to the relay at -smtp-host/-smtp-port (no STARTTLS support in this mode)")
 		fetchmailCmd.StringVar(&envelopeFrom, "envelope-from", "", "override the SMTP envelope sender (default: the message's own sender)")
 		fetchmailCmd.StringVar(&rcpt, "rcpt", "", "comma-separated list of recipients (default: the message's own To/Cc/Bcc)")
 		fetchmailCmd.DurationVar(&daemonInterval, "daemon", 0, "run continuously, polling every interval (e.g. 1m); default runs once and exits")
@@ -862,6 +863,7 @@ func main() {
 			SMTPStartTLS:    smtpStartTLS,
 			SMTPUser:        smtpUser,
 			SMTPPass:        smtpPass,
+			LMTP:            lmtp,
 			EnvelopeFrom:    envelopeFrom,
 			Rcpt:            rcptList,
 		}

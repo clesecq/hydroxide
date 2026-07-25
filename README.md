@@ -246,6 +246,11 @@ password (if the relay requires auth) is a separate secret from your
 ProtonMail bridge password — set it with `HYDROXIDE_FETCHMAIL_SMTP_PASS` if
 you don't want to be prompted for it.
 
+Pass `-lmtp` to deliver via LMTP instead of SMTP (e.g. straight to a local
+Dovecot/Cyrus mailbox) — still to the host/port set by `-smtp-host`/
+`-smtp-port`. LMTP mode doesn't support `-smtp-starttls`, since it's meant for
+trusted local delivery rather than relaying over the network.
+
 ## Docker
 
 Build the image from a checkout:

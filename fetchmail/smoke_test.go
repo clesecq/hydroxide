@@ -90,6 +90,100 @@ func TestDeliver(t *testing.T) {
 	}
 }
 
+// fakeLMTPServer is a minimal hand-rolled LMTP server good enough to
+// exercise deliverLMTP()'s LHLO greeting and per-recipient DATA response
+// handling.
+func fakeLMTPServer(t *testing.T, received chan<- string) string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		r := bufio.NewReader(conn)
+		w := conn
+
+		w.Write([]byte("220 fake.relay LMTP\r\n"))
+
+		var data strings.Builder
+		inData := false
+		numRcpt := 0
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if inData {
+				if strings.TrimRight(line, "\r\n") == "." {
+					inData = false
+					received <- data.String()
+					// LMTP: one response line per recipient.
+					for i := 0; i < numRcpt; i++ {
+						w.Write([]byte("250 OK\r\n"))
+					}
+					continue
+				}
+				data.WriteString(line)
+				continue
+			}
+
+			upper := strings.ToUpper(line)
+			switch {
+			case strings.HasPrefix(upper, "LHLO"):
+				w.Write([]byte("250-fake.relay\r\n250 8BITMIME\r\n"))
+			case strings.HasPrefix(upper, "EHLO"):
+				// A real LMTP server would reject this; fail loudly if
+				// deliverLMTP ever regresses to sending EHLO instead of LHLO.
+				w.Write([]byte("500 expected LHLO, not EHLO\r\n"))
+			case strings.HasPrefix(upper, "MAIL FROM"):
+				w.Write([]byte("250 OK\r\n"))
+			case strings.HasPrefix(upper, "RCPT TO"):
+				numRcpt++
+				w.Write([]byte("250 OK\r\n"))
+			case strings.HasPrefix(upper, "DATA"):
+				inData = true
+				w.Write([]byte("354 Go ahead\r\n"))
+			case strings.HasPrefix(upper, "QUIT"):
+				w.Write([]byte("221 Bye\r\n"))
+				return
+			default:
+				w.Write([]byte("500 unrecognized\r\n"))
+			}
+		}
+	}()
+
+	return ln.Addr().String()
+}
+
+func TestDeliverLMTP(t *testing.T) {
+	received := make(chan string, 1)
+	addr := fakeLMTPServer(t, received)
+	host, port, _ := net.SplitHostPort(addr)
+
+	cfg := &Config{
+		SMTPHost: host,
+		SMTPPort: port,
+		LMTP:     true,
+	}
+
+	body := []byte("Subject: test\r\n\r\nHello LMTP\r\n")
+	rcpt := []string{"a@example.com", "b@example.com"}
+	if err := deliver(cfg, "sender@example.com", rcpt, body); err != nil {
+		t.Fatalf("deliver failed: %v", err)
+	}
+
+	got := <-received
+	if !strings.Contains(got, "Hello LMTP") {
+		t.Fatalf("relay did not receive expected body, got: %q", got)
+	}
+}
+
 func TestResolveFolders(t *testing.T) {
 	labels, err := ResolveFolders(nil)
 	if err != nil || len(labels) != 1 || labels[0] != "0" {

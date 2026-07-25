@@ -10,11 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/emersion/go-sasl"
+	gosmtp "github.com/emersion/go-smtp"
 
 	"github.com/emersion/hydroxide/exports"
 	"github.com/emersion/hydroxide/protonmail"
@@ -34,13 +37,19 @@ type Config struct {
 	// days after it was forwarded. 0 disables deletion.
 	DeleteAfterDays int
 
-	// SMTPHost and SMTPPort address the outbound SMTP relay.
+	// SMTPHost and SMTPPort address the outbound relay.
 	SMTPHost, SMTPPort string
-	// SMTPStartTLS attempts STARTTLS if the relay offers it.
+	// SMTPStartTLS attempts STARTTLS if the relay offers it. Has no effect
+	// when LMTP is true: the LMTP client has no STARTTLS support.
 	SMTPStartTLS bool
 	// SMTPUser and SMTPPass are optional AUTH credentials for the relay.
 	// These are unrelated to the Proton bridge password.
 	SMTPUser, SMTPPass string
+	// LMTP delivers via LMTP (RFC 2033) instead of SMTP, still to
+	// SMTPHost:SMTPPort. LMTP is normally used for trusted local delivery
+	// (e.g. straight to Dovecot/Cyrus), so STARTTLS isn't supported in this
+	// mode.
+	LMTP bool
 
 	// EnvelopeFrom overrides the SMTP envelope sender. If empty, the
 	// message's own sender address is used.
@@ -224,6 +233,13 @@ func messageRecipients(msg *protonmail.Message) []string {
 }
 
 func deliver(cfg *Config, from string, rcpt []string, body []byte) error {
+	if cfg.LMTP {
+		return deliverLMTP(cfg, from, rcpt, body)
+	}
+	return deliverSMTP(cfg, from, rcpt, body)
+}
+
+func deliverSMTP(cfg *Config, from string, rcpt []string, body []byte) error {
 	addr := cfg.SMTPHost + ":" + cfg.SMTPPort
 
 	client, err := smtp.Dial(addr)
@@ -264,6 +280,50 @@ func deliver(cfg *Config, from string, rcpt []string, body []byte) error {
 		w.Close()
 		return fmt.Errorf("failed to write message body: %v", err)
 	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("failed to finish DATA: %v", err)
+	}
+
+	return client.Quit()
+}
+
+func deliverLMTP(cfg *Config, from string, rcpt []string, body []byte) error {
+	addr := cfg.SMTPHost + ":" + cfg.SMTPPort
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to LMTP relay %s: %v", addr, err)
+	}
+
+	client := gosmtp.NewClientLMTP(conn)
+	defer client.Close()
+
+	if cfg.SMTPUser != "" {
+		auth := sasl.NewPlainClient("", cfg.SMTPUser, cfg.SMTPPass)
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("LMTP AUTH failed: %v", err)
+		}
+	}
+
+	if err := client.Mail(from, nil); err != nil {
+		return fmt.Errorf("MAIL FROM failed: %v", err)
+	}
+	for _, to := range rcpt {
+		if err := client.Rcpt(to, nil); err != nil {
+			return fmt.Errorf("RCPT TO %q failed: %v", to, err)
+		}
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("DATA failed: %v", err)
+	}
+	if _, err := w.Write(body); err != nil {
+		w.Close()
+		return fmt.Errorf("failed to write message body: %v", err)
+	}
+	// Close() returns the joined per-recipient errors, if any, for LMTP
+	// clients.
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("failed to finish DATA: %v", err)
 	}
