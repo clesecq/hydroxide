@@ -75,13 +75,28 @@ func askBridgePass() (string, error) {
 	return string(b), err
 }
 
+// tlsConfigFor returns a copy of the TLS configuration advertising the ALPN
+// protocol of a given service (RFC 8314).
+//
+// The copy matters: the servers would otherwise share one config, and the HTTP
+// server sets NextProtos on it for HTTP/2. Clients asking for "imap" or "smtp"
+// then find no protocol in common and every connection is dropped.
+func tlsConfigFor(tlsConfig *tls.Config, proto string) *tls.Config {
+	if tlsConfig == nil {
+		return nil
+	}
+	c := tlsConfig.Clone()
+	c.NextProtos = []string{proto}
+	return c
+}
+
 func listenAndServeSMTP(addr string, debug bool, authManager *auth.Manager, tlsConfig *tls.Config) error {
 	be := smtpbackend.New(authManager)
 	s := smtp.NewServer(be)
 	s.Addr = addr
 	s.Domain = "localhost" // TODO: make this configurable
 	s.AllowInsecureAuth = tlsConfig == nil
-	s.TLSConfig = tlsConfig
+	s.TLSConfig = tlsConfigFor(tlsConfig, "smtp")
 	if debug {
 		s.Debug = os.Stdout
 	}
@@ -100,7 +115,7 @@ func listenAndServeIMAP(addr string, debug bool, authManager *auth.Manager, even
 	s := imapserver.New(be)
 	s.Addr = addr
 	s.AllowInsecureAuth = tlsConfig == nil
-	s.TLSConfig = tlsConfig
+	s.TLSConfig = tlsConfigFor(tlsConfig, "imap")
 	if debug {
 		s.Debug = os.Stdout
 	}
