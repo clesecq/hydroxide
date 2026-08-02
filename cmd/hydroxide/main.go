@@ -3,13 +3,18 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -19,6 +24,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/emersion/hydroxide/auth"
+	"github.com/emersion/hydroxide/captcha"
 	"github.com/emersion/hydroxide/carddav"
 	"github.com/emersion/hydroxide/config"
 	"github.com/emersion/hydroxide/events"
@@ -41,10 +47,19 @@ var (
 )
 
 func newClient() *protonmail.Client {
+	// Proton's API hands out a session cookie on /auth/info and expects it
+	// back on the requests that follow. Without a jar every request looks like
+	// a brand new, sessionless client, which the API treats with suspicion.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		log.Fatalf("failed to create cookie jar: %v", err)
+	}
+
 	return &protonmail.Client{
 		RootURL:    apiEndpoint,
 		AppVersion: appVersion,
 		Debug:      debug,
+		HTTPClient: &http.Client{Jar: jar},
 	}
 }
 
@@ -189,7 +204,7 @@ func isMbox(br *bufio.Reader) (bool, error) {
 
 const usage = `usage: hydroxide [options...] <command>
 Commands:
-	auth <username>		Login to ProtonMail via hydroxide
+	auth [options...] <username>	Login to ProtonMail via hydroxide
 	carddav			Run hydroxide as a CardDAV server
 	export-secret-keys <username> Export secret keys
 	imap			Run hydroxide as an IMAP server
@@ -231,6 +246,20 @@ Global options:
 		Path to the certificate key to use for incoming connections (Optional)
 	-tls-client-ca /path/to/ca.pem
 		If set, clients must provide a certificate signed by the given CA (Optional)
+
+Options for "auth":
+	-captcha-mode browser|manual|disabled
+		How to complete Proton's human verification challenge when it is
+		requested, defaults to browser
+	-captcha-listen 127.0.0.1:8765
+		Address of the local, loopback-only CAPTCHA helper server
+	-captcha-timeout 10m
+		Maximum time to wait for the challenge to be completed
+	-no-open-browser
+		Print the CAPTCHA URL instead of trying to launch a browser
+	-captcha-endpoint https://mail-api.proton.me
+		API host serving the CAPTCHA challenge. It must serve both
+		/core/v4/captcha and the widget's assets under /captcha/v1/assets/
 
 Environment variables:
 	HYDROXIDE_BRIDGE_PASS	Don't prompt for the bridge password, use this variable instead
@@ -277,11 +306,36 @@ func main() {
 	cmd := flag.Arg(0)
 	switch cmd {
 	case "auth":
+		var captchaMode, captchaListen string
+		var captchaTimeout time.Duration
+		var noOpenBrowser bool
+		authCmd.StringVar(&captchaMode, "captcha-mode", string(captcha.ModeBrowser), "CAPTCHA behavior: browser, manual or disabled")
+		authCmd.StringVar(&captchaListen, "captcha-listen", captcha.DefaultListenAddr, "Local CAPTCHA callback address")
+		authCmd.DurationVar(&captchaTimeout, "captcha-timeout", captcha.DefaultTimeout, "Maximum time to wait for the CAPTCHA to be completed")
+		authCmd.BoolVar(&noOpenBrowser, "no-open-browser", false, "Print the CAPTCHA URL without trying to launch a browser")
+		captchaEndpoint := authCmd.String("captcha-endpoint", protonmail.CaptchaEndpoint, "API host serving the CAPTCHA challenge")
 		authCmd.Parse(flag.Args()[1:])
+		protonmail.CaptchaEndpoint = *captchaEndpoint
 		username := authCmd.Arg(0)
 		if username == "" {
-			log.Fatal("usage: hydroxide auth <username>")
+			log.Fatal("usage: hydroxide auth [options...] <username>")
 		}
+
+		mode, err := captcha.ParseMode(captchaMode)
+		if err != nil {
+			log.Fatal(err)
+		}
+		captchaOpts := captcha.Options{
+			Mode:        mode,
+			ListenAddr:  captchaListen,
+			Timeout:     captchaTimeout,
+			OpenBrowser: !noOpenBrowser,
+			Output:      os.Stderr,
+		}
+
+		// Make sure Ctrl+C tears down the CAPTCHA server cleanly.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
 
 		c := newClient()
 
@@ -303,12 +357,7 @@ func main() {
 				loginPassword = string(pass)
 			}
 
-			authInfo, err := c.AuthInfo(username)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			a, err = c.Auth(username, loginPassword, authInfo)
+			a, err = captcha.Authenticate(ctx, c, username, loginPassword, captchaOpts)
 			if err != nil {
 				log.Fatal(err)
 			}
