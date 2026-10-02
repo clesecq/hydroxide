@@ -11,6 +11,9 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
+	"github.com/emersion/go-message"
+	// Decode bodies in any charset: the API expects UTF-8
+	_ "github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
@@ -79,6 +82,97 @@ func splitRecipients(rcpt []string, to, cc []*mail.Address) (toList, ccList, bcc
 	}
 
 	return toList, ccList, bccList, dropped
+}
+
+// walkParts walks the MIME tree of e. The first text/plain or text/html part
+// which isn't an attachment is the message body, passed to body; every other
+// part is passed to attach. Of a multipart/alternative, only the HTML version,
+// or else the plain text one, is kept.
+func walkParts(e *message.Entity, body func(t string, b []byte), attach func(h message.Header, r io.Reader) error) error {
+	w := partWalker{body: body, attach: attach}
+	return w.walk(e)
+}
+
+type partWalker struct {
+	body    func(t string, b []byte)
+	attach  func(h message.Header, r io.Reader) error
+	hasBody bool
+}
+
+func isBodyType(t string) bool {
+	return t == "text/plain" || t == "text/html"
+}
+
+func (w *partWalker) walk(e *message.Entity) error {
+	mr := e.MultipartReader()
+	if mr == nil {
+		return w.leaf(e.Header, e.Body)
+	}
+	defer mr.Close()
+
+	if t, _, _ := e.Header.ContentType(); t == "multipart/alternative" {
+		return w.alternative(mr)
+	}
+
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			return nil
+		} else if err != nil && !message.IsUnknownCharset(err) {
+			return err
+		}
+		if err := w.walk(p); err != nil {
+			return err
+		}
+	}
+}
+
+// leaf handles a part which isn't multipart.
+func (w *partWalker) leaf(h message.Header, r io.Reader) error {
+	t, _, _ := h.ContentType()
+	disp, _, _ := h.ContentDisposition()
+	if w.hasBody || disp == "attachment" || !isBodyType(t) {
+		return w.attach(h, r)
+	}
+
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	w.body(t, b)
+	w.hasBody = true
+	return nil
+}
+
+// alternative handles the versions of the same content in a
+// multipart/alternative, and discards all but one.
+func (w *partWalker) alternative(mr message.MultipartReader) error {
+	var chosen *message.Entity
+	var b []byte
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		} else if err != nil && !message.IsUnknownCharset(err) {
+			return err
+		}
+
+		t, _, _ := p.Header.ContentType()
+		if p.MultipartReader() != nil || !isBodyType(t) {
+			continue
+		}
+		if chosen == nil || t == "text/html" {
+			if b, err = io.ReadAll(p.Body); err != nil {
+				return err
+			}
+			chosen = p
+		}
+	}
+
+	if chosen == nil {
+		return nil
+	}
+	return w.leaf(chosen.Header, bytes.NewReader(b))
 }
 
 // replyParent returns the ID of the message the outgoing message replies to.
@@ -185,30 +279,31 @@ func newPackageSet(attachmentKeys map[string]*packet.EncryptedKey, bodyType stri
 
 func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.EntityList, addrs []*protonmail.Address, rcpt []string, r io.Reader) error {
 	// Parse the incoming MIME message header
-	mr, err := mail.CreateReader(r)
-	if err != nil {
+	e, err := message.Read(r)
+	if err != nil && !message.IsUnknownCharset(err) {
 		return err
 	}
+	h := mail.Header{Header: e.Header}
 
-	subject, err := mr.Header.Subject()
+	subject, err := h.Subject()
 	if err != nil {
 		return fmt.Errorf("failed to parse Subject: %v", err)
 	}
-	fromList, err := mr.Header.AddressList("From")
+	fromList, err := h.AddressList("From")
 	if err != nil {
 		return fmt.Errorf("failed to parse From: %v", err)
 	}
-	headerTo, err := mr.Header.AddressList("To")
+	headerTo, err := h.AddressList("To")
 	if err != nil {
 		return fmt.Errorf("failed to parse To: %v", err)
 	}
-	headerCc, err := mr.Header.AddressList("Cc")
+	headerCc, err := h.AddressList("Cc")
 	if err != nil {
 		return fmt.Errorf("failed to parse Cc: %v", err)
 	}
 
 	// The envelope is authoritative: the Bcc header field must not be sent
-	mr.Header.Del("Bcc")
+	h.Del("Bcc")
 	toList, ccList, bccList, dropped := splitRecipients(rcpt, headerTo, headerCc)
 	if len(dropped) > 0 {
 		log.Printf("removing recipients missing from the envelope: %v", dropped)
@@ -227,7 +322,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		return err
 	}
 
-	msgID, err := mr.Header.MessageID()
+	msgID, err := h.MessageID()
 	if err != nil {
 		return fmt.Errorf("failed to parse Message-Id: %v", err)
 	}
@@ -237,7 +332,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		CCList:     toPMAddressList(ccList),
 		BCCList:    toPMAddressList(bccList),
 		Subject:    subject,
-		Header:     formatHeader(mr.Header),
+		Header:     formatHeader(h),
 		AddressID:  fromAddr.ID,
 		ExternalID: msgID,
 		Sender: &protonmail.MessageAddress{
@@ -257,7 +352,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		return err
 	}
 
-	parentID, placeholder, err := replyParent(c, fromAddr, mr.Header)
+	parentID, placeholder, err := replyParent(c, fromAddr, h)
 	if err != nil {
 		return err
 	}
@@ -274,90 +369,71 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		return fmt.Errorf("cannot create draft message: %v", err)
 	}
 
-	// Parse the incoming MIME message body
-	// Save the message text into a buffer
-	// Upload attachments
-
-	var body *bytes.Buffer
+	// Save the message text into a buffer and upload the attachments
+	var body []byte
 	var bodyType string
 	attachmentKeys := make(map[string]*packet.EncryptedKey)
 
-	for {
-		p, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return err
+	err = walkParts(e, func(t string, b []byte) {
+		bodyType, body = t, b
+	}, func(h message.Header, r io.Reader) error {
+		ah := mail.AttachmentHeader{Header: h}
+		t, _, err := ah.ContentType()
+		if err != nil {
+			return fmt.Errorf("cannot parse attachment Content-Type: %v", err)
+		}
+		filename, err := ah.Filename()
+		if err != nil {
+			return fmt.Errorf("cannot parse attachment file name: %v", err)
+		}
+		if filename == "" {
+			filename = "attachment"
 		}
 
-		switch h := p.Header.(type) {
-		case *mail.InlineHeader:
-			t, _, err := h.ContentType()
-			if err != nil {
-				break
-			}
-
-			if body != nil && t != "text/html" {
-				break
-			}
-
-			body = &bytes.Buffer{}
-			bodyType = t
-			if _, err := io.Copy(body, p.Body); err != nil {
-				return err
-			}
-		case *mail.AttachmentHeader:
-			t, _, err := h.ContentType()
-			if err != nil {
-				break
-			}
-
-			filename, err := h.Filename()
-			if err != nil {
-				break
-			}
-
-			att := &protonmail.Attachment{
-				MessageID: msg.ID,
-				Name:      filename,
-				MIMEType:  t,
-				ContentID: h.Get("Content-Id"),
-				// TODO: Header
-			}
-
-			attKey, err := att.GenerateKey([]*openpgp.Entity{privateKey})
-			if err != nil {
-				return fmt.Errorf("cannot generate attachment key: %v", err)
-			}
-
-			log.Printf("uploading message attachment %q", filename)
-
-			pr, pw := io.Pipe()
-
-			go func() {
-				cleartext, err := att.Encrypt(pw, privateKey)
-				if err != nil {
-					pw.CloseWithError(err)
-					return
-				}
-				if _, err := io.Copy(cleartext, p.Body); err != nil {
-					pw.CloseWithError(err)
-					return
-				}
-				pw.CloseWithError(cleartext.Close())
-			}()
-
-			att, err = c.CreateAttachment(att, pr)
-			if err != nil {
-				return fmt.Errorf("cannot upload attachment: %v", err)
-			}
-
-			attachmentKeys[att.ID] = attKey
+		att := &protonmail.Attachment{
+			MessageID: msg.ID,
+			Name:      filename,
+			MIMEType:  t,
+			ContentID: h.Get("Content-Id"),
+			// TODO: Header
 		}
+
+		attKey, err := att.GenerateKey([]*openpgp.Entity{privateKey})
+		if err != nil {
+			return fmt.Errorf("cannot generate attachment key: %v", err)
+		}
+
+		log.Printf("uploading message attachment %q", filename)
+
+		pr, pw := io.Pipe()
+
+		go func() {
+			cleartext, err := att.Encrypt(pw, privateKey)
+			if err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+			if _, err := io.Copy(cleartext, r); err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+			pw.CloseWithError(cleartext.Close())
+		}()
+
+		att, err = c.CreateAttachment(att, pr)
+		if err != nil {
+			return fmt.Errorf("cannot upload attachment: %v", err)
+		}
+
+		attachmentKeys[att.ID] = attKey
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if body == nil {
-		return errors.New("message doesn't contain a body part")
+		return errors.New("message doesn't contain a text part")
 	}
 
 	// Encrypt the body and update the draft
@@ -368,7 +444,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(plaintext, bytes.NewReader(body.Bytes())); err != nil {
+	if _, err := plaintext.Write(body); err != nil {
 		return err
 	}
 	if err := plaintext.Close(); err != nil {
@@ -411,7 +487,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	outgoing := &protonmail.OutgoingMessage{ID: msg.ID}
 
 	if len(plaintextRecipients) > 0 {
-		plaintextSet, err := newPackageSet(attachmentKeys, bodyType, body.Bytes(), privateKey)
+		plaintextSet, err := newPackageSet(attachmentKeys, bodyType, body, privateKey)
 		if err != nil {
 			return err
 		}
@@ -431,7 +507,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	}
 
 	if len(encryptedRecipients) > 0 {
-		encryptedSet, err := newPackageSet(attachmentKeys, bodyType, body.Bytes(), privateKey)
+		encryptedSet, err := newPackageSet(attachmentKeys, bodyType, body, privateKey)
 		if err != nil {
 			return err
 		}

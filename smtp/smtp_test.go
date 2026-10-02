@@ -2,11 +2,14 @@ package smtp
 
 import (
 	"bytes"
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
 
 	"github.com/emersion/hydroxide/protonmail"
@@ -118,5 +121,111 @@ func TestSplitRecipients(t *testing.T) {
 	}
 	if toList[0].Name != "Alice" {
 		t.Errorf("display name lost: %q", toList[0].Name)
+	}
+}
+
+func TestWalkParts(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		msg         string
+		bodyType    string
+		body        string
+		attachments []string // Content-Type and content of each attachment
+	}{
+		{
+			name:     "no Content-Type",
+			msg:      "Subject: [PATCH] f: add b\r\n\r\n---\r\n+b\r\n",
+			bodyType: "text/plain",
+			body:     "---\r\n+b\r\n",
+		},
+		{
+			name: "format-patch --inline",
+			msg: "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+				"--b\r\nContent-Type: text/plain; charset=UTF-8; format=fixed\r\n\r\nf: add b\r\n" +
+				"--b\r\nContent-Type: text/x-patch; name=\"0001-f.patch\"\r\n" +
+				"Content-Disposition: inline; filename=\"0001-f.patch\"\r\n\r\n+b\r\n" +
+				"--b--\r\n",
+			bodyType:    "text/plain",
+			body:        "f: add b",
+			attachments: []string{"text/x-patch: +b"},
+		},
+		{
+			name: "format-patch --attach",
+			msg: "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+				"--b\r\nContent-Type: text/plain\r\n\r\nf: add b\r\n" +
+				"--b\r\nContent-Type: text/x-patch\r\n" +
+				"Content-Disposition: attachment; filename=\"0001-f.patch\"\r\n\r\n+b\r\n" +
+				"--b--\r\n",
+			bodyType:    "text/plain",
+			body:        "f: add b",
+			attachments: []string{"text/x-patch: +b"},
+		},
+		{
+			name: "second text part",
+			msg: "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+				"--b\r\nContent-Type: text/plain\r\n\r\nfirst\r\n" +
+				"--b\r\nContent-Type: text/plain\r\n\r\nsecond\r\n" +
+				"--b--\r\n",
+			bodyType:    "text/plain",
+			body:        "first",
+			attachments: []string{"text/plain: second"},
+		},
+		{
+			name: "inline image first",
+			msg: "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+				"--b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\r\nPNG\r\n" +
+				"--b\r\nContent-Type: text/plain\r\n\r\ntext\r\n" +
+				"--b--\r\n",
+			bodyType:    "text/plain",
+			body:        "text",
+			attachments: []string{"image/png: PNG"},
+		},
+		{
+			name: "alternative",
+			msg: "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+				"--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n" +
+				"--a\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+				"--a\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n" +
+				"--a--\r\n" +
+				"--b\r\nContent-Type: application/pdf\r\n\r\nPDF\r\n" +
+				"--b--\r\n",
+			bodyType:    "text/html",
+			body:        "<p>html</p>",
+			attachments: []string{"application/pdf: PDF"},
+		},
+		{
+			name:     "latin-1",
+			msg:      "Content-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nb =E9\r\n",
+			bodyType: "text/plain",
+			body:     "b é\r\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := message.Read(strings.NewReader(tc.msg))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var bodyType, body string
+			var attachments []string
+			err = walkParts(e, func(t string, b []byte) {
+				bodyType, body = t, string(b)
+			}, func(h message.Header, r io.Reader) error {
+				ct, _, _ := h.ContentType()
+				b, err := io.ReadAll(r)
+				attachments = append(attachments, ct+": "+string(b))
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if bodyType != tc.bodyType || body != tc.body {
+				t.Errorf("got body %v %q, want %v %q", bodyType, body, tc.bodyType, tc.body)
+			}
+			if !reflect.DeepEqual(attachments, tc.attachments) {
+				t.Errorf("got attachments %q, want %q", attachments, tc.attachments)
+			}
+		})
 	}
 }
