@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
@@ -14,6 +15,7 @@ import (
 	"github.com/emersion/go-smtp"
 
 	"github.com/emersion/hydroxide/auth"
+	"github.com/emersion/hydroxide/imports"
 	"github.com/emersion/hydroxide/protonmail"
 )
 
@@ -53,6 +55,74 @@ func bccFromRest(rcpt []string, ignoreMails []*mail.Address) []*mail.Address {
 		})
 	}
 	return final
+}
+
+// replyParent returns the ID of the message the outgoing message replies to.
+//
+// The API ignores In-Reply-To and References from the submitted header: it
+// generates them from the parent message instead. When the parent isn't in
+// the mailbox (e.g. a mailing list post that was never received), a
+// placeholder carrying its Message-Id and References is imported into the
+// trash so that the API can generate both fields. In that case placeholder is
+// true and the caller must delete the message once it has been sent.
+func replyParent(c *protonmail.Client, addr *protonmail.Address, h mail.Header) (id string, placeholder bool, err error) {
+	inReplyTo, err := h.MsgIDList("In-Reply-To")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to parse In-Reply-To: %v", err)
+	}
+	if len(inReplyTo) == 0 {
+		return "", false, nil
+	}
+	// The API supports a single parent
+	parent := inReplyTo[0]
+
+	_, msgs, err := c.ListMessages(&protonmail.MessageFilter{
+		Limit:      1,
+		ExternalID: parent,
+		AddressID:  addr.ID,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if len(msgs) > 0 {
+		return msgs[0].ID, false, nil
+	}
+
+	refs, err := h.MsgIDList("References")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to parse References: %v", err)
+	}
+	// The API appends the parent's Message-Id to its References
+	if n := len(refs); n > 0 && refs[n-1] == parent {
+		refs = refs[:n-1]
+	}
+
+	var ph mail.Header
+	ph.SetDate(time.Now())
+	ph.SetAddressList("From", []*mail.Address{{Address: addr.Email}})
+	ph.SetSubject("hydroxide reply placeholder")
+	ph.SetMessageID(parent)
+	if len(refs) > 0 {
+		ph.SetMsgIDList("References", refs)
+	}
+	ph.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
+
+	var b bytes.Buffer
+	w, err := mail.CreateSingleInlineWriter(&b, ph)
+	if err != nil {
+		return "", false, err
+	}
+	io.WriteString(w, "Placeholder imported by hydroxide to send a reply to a message missing from the mailbox.\r\n")
+	if err := w.Close(); err != nil {
+		return "", false, err
+	}
+
+	log.Println("importing placeholder parent message")
+	id, err = imports.Import(c, &b, addr, []string{protonmail.LabelTrash}, false)
+	if err != nil {
+		return "", false, fmt.Errorf("cannot import placeholder parent message: %v", err)
+	}
+	return id, true, nil
 }
 
 func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.EntityList, addrs []*protonmail.Address, rcpt []string, r io.Reader) error {
@@ -115,23 +185,16 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		return err
 	}
 
-	parentID := ""
-	inReplyToList, _ := mr.Header.AddressList("In-Reply-To")
-	if len(inReplyToList) == 1 {
-		inReplyTo := inReplyToList[0].Address
-
-		filter := protonmail.MessageFilter{
-			Limit:      1,
-			ExternalID: inReplyTo,
-			AddressID:  fromAddr.ID,
-		}
-		total, msgs, err := c.ListMessages(&filter)
-		if err != nil {
-			return err
-		}
-		if total == 1 {
-			parentID = msgs[0].ID
-		}
+	parentID, placeholder, err := replyParent(c, fromAddr, mr.Header)
+	if err != nil {
+		return err
+	}
+	if placeholder {
+		defer func() {
+			if err := c.DeleteMessages([]string{parentID}); err != nil {
+				log.Printf("failed to delete placeholder parent message: %v", err)
+			}
+		}()
 	}
 
 	msg, err = c.CreateDraftMessage(msg, parentID)
