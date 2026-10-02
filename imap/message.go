@@ -407,39 +407,13 @@ func createMessage(c *protonmail.Client, u *protonmail.User, privateKeys openpgp
 		return nil, err
 	}
 
-	fromAddrStr := msg.Sender.Address
-	var fromAddr *protonmail.Address
-	for _, addr := range addrs {
-		if strings.EqualFold(addr.Email, fromAddrStr) {
-			fromAddr = addr
-			break
-		}
-	}
-	if fromAddr == nil {
-		return nil, errors.New("unknown sender address")
-	}
-	if len(fromAddr.Keys) == 0 {
-		return nil, errors.New("sender address has no private key")
-	}
-
-	// TODO: get appropriate private key
-	encryptedPrivateKey, err := fromAddr.Keys[0].Entity()
+	fromAddr, privateKey, err := protonmail.FindSendingAddress(addrs, msg.Sender.Address, privateKeys)
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse sender private key: %v", err)
-	}
-
-	var privateKey *openpgp.Entity
-	for _, e := range privateKeys {
-		if e.PrimaryKey.KeyId == encryptedPrivateKey.PrimaryKey.KeyId {
-			privateKey = e
-			break
-		}
-	}
-	if privateKey == nil {
-		return nil, errors.New("sender address key hasn't been decrypted")
+		return nil, err
 	}
 
 	msg.AddressID = fromAddr.ID
+	msg.Sender.Address = fromAddr.Email
 
 	// Create an empty draft
 	plaintext, err := msg.Encrypt([]*openpgp.Entity{privateKey}, privateKey)

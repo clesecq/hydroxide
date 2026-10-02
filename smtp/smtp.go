@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
@@ -81,36 +80,9 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	}
 
 	rawFrom := fromList[0]
-	fromAddrStr := rawFrom.Address
-	var fromAddr *protonmail.Address
-	for _, addr := range addrs {
-		if strings.EqualFold(addr.Email, fromAddrStr) {
-			fromAddr = addr
-			break
-		}
-	}
-	if fromAddr == nil {
-		return errors.New("unknown sender address")
-	}
-	if len(fromAddr.Keys) == 0 {
-		return errors.New("sender address has no private key")
-	}
-
-	// TODO: get appropriate private key
-	encryptedPrivateKey, err := fromAddr.Keys[0].Entity()
+	fromAddr, privateKey, err := protonmail.FindSendingAddress(addrs, rawFrom.Address, privateKeys)
 	if err != nil {
-		return fmt.Errorf("cannot parse sender private key: %v", err)
-	}
-
-	var privateKey *openpgp.Entity
-	for _, e := range privateKeys {
-		if e.PrimaryKey.KeyId == encryptedPrivateKey.PrimaryKey.KeyId {
-			privateKey = e
-			break
-		}
-	}
-	if privateKey == nil {
-		return errors.New("sender address key hasn't been decrypted")
+		return err
 	}
 
 	msgID, err := mr.Header.MessageID()
@@ -127,7 +99,7 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		AddressID:  fromAddr.ID,
 		ExternalID: msgID,
 		Sender: &protonmail.MessageAddress{
-			Address: rawFrom.Address,
+			Address: fromAddr.Email,
 			Name:    rawFrom.Name,
 		},
 	}
