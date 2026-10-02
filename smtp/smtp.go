@@ -125,6 +125,40 @@ func replyParent(c *protonmail.Client, addr *protonmail.Address, h mail.Header) 
 	return id, true, nil
 }
 
+// recipientKey returns the key to encrypt the message to, or nil if the
+// message must be sent in cleartext.
+//
+// External recipients get cleartext even when the API returns keys for them
+// (e.g. published via WKD). Proton clients encrypt to these keys with
+// PGP/MIME by default, which isn't supported here; and silently encrypting
+// mail such as patches sent to a mailing list and its maintainers would be
+// surprising anyway.
+func recipientKey(resp *protonmail.PublicKeyResp) (*openpgp.Entity, error) {
+	if resp.RecipientType != protonmail.RecipientInternal {
+		return nil, nil
+	}
+	return resp.EncryptionKey()
+}
+
+// newPackageSet creates a package set holding body encrypted with a new
+// session key.
+func newPackageSet(attachmentKeys map[string]*packet.EncryptedKey, bodyType string, body []byte, privateKey *openpgp.Entity) (*protonmail.MessagePackageSet, error) {
+	set := protonmail.NewMessagePackageSet(attachmentKeys)
+
+	plaintext, err := set.Encrypt(bodyType, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := plaintext.Write(body); err != nil {
+		plaintext.Close()
+		return nil, err
+	}
+	if err := plaintext.Close(); err != nil {
+		return nil, err
+	}
+	return set, nil
+}
+
 func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.EntityList, addrs []*protonmail.Address, rcpt []string, r io.Reader) error {
 	// Parse the incoming MIME message header
 	mr, err := mail.CreateReader(r)
@@ -323,18 +357,15 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 			return fmt.Errorf("cannot get public key for address %q: %v", rcpt.Address, err)
 		}
 
-		if len(resp.Keys) == 0 {
-			plaintextRecipients = append(plaintextRecipients, rcpt.Address)
-			continue
-		}
-
-		// TODO: only keys with Send == 1
-		pub, err := resp.Keys[0].Entity()
+		pub, err := recipientKey(resp)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot get public key for address %q: %v", rcpt.Address, err)
 		}
-
-		encryptedRecipients[rcpt.Address] = pub
+		if pub == nil {
+			plaintextRecipients = append(plaintextRecipients, rcpt.Address)
+		} else {
+			encryptedRecipients[rcpt.Address] = pub
+		}
 	}
 
 	// Create and send the outgoing message
@@ -342,17 +373,8 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	outgoing := &protonmail.OutgoingMessage{ID: msg.ID}
 
 	if len(plaintextRecipients) > 0 {
-		plaintextSet := protonmail.NewMessagePackageSet(attachmentKeys)
-
-		plaintext, err := plaintextSet.Encrypt(bodyType, privateKey)
+		plaintextSet, err := newPackageSet(attachmentKeys, bodyType, body.Bytes(), privateKey)
 		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(plaintext, bytes.NewReader(body.Bytes())); err != nil {
-			plaintext.Close()
-			return err
-		}
-		if err := plaintext.Close(); err != nil {
 			return err
 		}
 
@@ -371,17 +393,8 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 	}
 
 	if len(encryptedRecipients) > 0 {
-		encryptedSet := protonmail.NewMessagePackageSet(attachmentKeys)
-
-		plaintext, err := encryptedSet.Encrypt(bodyType, privateKey)
+		encryptedSet, err := newPackageSet(attachmentKeys, bodyType, body.Bytes(), privateKey)
 		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(plaintext, bytes.NewReader(body.Bytes())); err != nil {
-			plaintext.Close()
-			return err
-		}
-		if err := plaintext.Close(); err != nil {
 			return err
 		}
 

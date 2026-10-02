@@ -54,8 +54,27 @@ type PublicKeyResp struct {
 	Keys          []*PublicKey
 }
 
+// EncryptionKey returns the first key that messages can be encrypted to.
+func (resp *PublicKeyResp) EncryptionKey() (*openpgp.Entity, error) {
+	for _, key := range resp.Keys {
+		if key.Flags&PublicKeyActive != 0 {
+			return key.Entity()
+		}
+	}
+	return nil, errors.New("no active public key")
+}
+
+type PublicKeyFlags int
+
+const (
+	// The key isn't compromised: signatures made with it can be trusted
+	PublicKeyTrusted PublicKeyFlags = 1 << iota
+	// The key isn't obsolete: messages can be encrypted to it
+	PublicKeyActive
+)
+
 type PublicKey struct {
-	Send      int
+	Flags     PublicKeyFlags
 	PublicKey string
 }
 
