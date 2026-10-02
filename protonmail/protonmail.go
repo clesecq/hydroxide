@@ -129,6 +129,30 @@ func (c *Client) newJSONRequest(method, path string, body interface{}) (*http.Re
 	return req, nil
 }
 
+// Retry policy for rate-limited requests, matching the official clients.
+const (
+	maxRetries        = 3
+	maxRetryDelay     = time.Minute
+	defaultRetryDelay = 10 * time.Second
+)
+
+// retryDelay returns how long to wait before retrying a request which got
+// resp, or false if it shouldn't be retried.
+func retryDelay(resp *http.Response) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+		return 0, false
+	}
+
+	delay := defaultRetryDelay
+	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs >= 0 {
+		delay = time.Duration(secs) * time.Second
+	}
+	if delay > maxRetryDelay {
+		return 0, false
+	}
+	return delay, true
+}
+
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", "Ubuntu_20.04")
 	req.Header.Set("x-pm-appversion", "Other")
@@ -138,32 +162,42 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		httpClient = http.DefaultClient
 	}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return resp, err
-	}
-
-	// Check if access token has expired
-	_, hasAuth := req.Header["Authorization"]
 	canRetry := req.Body == nil || req.GetBody != nil
-	if resp.StatusCode == http.StatusUnauthorized && hasAuth && c.ReAuth != nil && canRetry {
-		resp.Body.Close()
-		c.accessToken = ""
-		if err := c.ReAuth(); err != nil {
+	reauthenticated := false
+	rateLimited := 0
+	for {
+		resp, err := httpClient.Do(req)
+		if err != nil || !canRetry {
 			return resp, err
 		}
-		c.setRequestAuthorization(req) // Access token has changed
+
+		_, hasAuth := req.Header["Authorization"]
+		if resp.StatusCode == http.StatusUnauthorized && hasAuth && c.ReAuth != nil && !reauthenticated {
+			// The access token has expired
+			resp.Body.Close()
+			c.accessToken = ""
+			if err := c.ReAuth(); err != nil {
+				return resp, err
+			}
+			c.setRequestAuthorization(req) // Access token has changed
+			reauthenticated = true
+		} else if delay, ok := retryDelay(resp); ok && rateLimited < maxRetries {
+			rateLimited++
+			resp.Body.Close()
+			log.Printf("%v %v: rate limited, retrying in %v", req.Method, req.URL.Path, delay)
+			time.Sleep(delay)
+		} else {
+			return resp, nil
+		}
+
 		if req.Body != nil {
 			body, err := req.GetBody()
 			if err != nil {
-				return resp, err
+				return nil, err
 			}
 			req.Body = body
 		}
-		return c.do(req)
 	}
-
-	return resp, nil
 }
 
 func (c *Client) doJSON(req *http.Request, respData interface{}) error {
