@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -39,22 +40,45 @@ func formatHeader(h mail.Header) string {
 	return b.String()
 }
 
-func bccFromRest(rcpt []string, ignoreMails []*mail.Address) []*mail.Address {
-	ignore := make(map[string]struct{})
-	for _, mail := range ignoreMails {
-		ignore[mail.Address] = struct{}{}
+// splitRecipients matches the To and Cc header fields against the envelope
+// recipients, which are the ones the message must be delivered to.
+//
+// The API delivers the message to every recipient of the draft, so header
+// recipients missing from the envelope are dropped, and envelope recipients
+// missing from the header become Bcc recipients. Addresses are compared
+// case-insensitively and duplicates are removed.
+func splitRecipients(rcpt []string, to, cc []*mail.Address) (toList, ccList, bccList, dropped []*mail.Address) {
+	envelope := make(map[string]bool, len(rcpt))
+	for _, addr := range rcpt {
+		envelope[strings.ToLower(addr)] = true
 	}
 
-	final := make([]*mail.Address, 0, len(rcpt))
-	for _, addr := range rcpt {
-		if _, exists := ignore[addr]; exists {
-			continue
+	seen := make(map[string]bool, len(rcpt))
+	filter := func(addrs []*mail.Address) []*mail.Address {
+		var l []*mail.Address
+		for _, addr := range addrs {
+			k := strings.ToLower(addr.Address)
+			if !envelope[k] {
+				dropped = append(dropped, addr)
+			} else if !seen[k] {
+				seen[k] = true
+				l = append(l, addr)
+			}
 		}
-		final = append(final, &mail.Address{
-			Address: addr,
-		})
+		return l
 	}
-	return final
+	toList = filter(to)
+	ccList = filter(cc)
+
+	for _, addr := range rcpt {
+		k := strings.ToLower(addr)
+		if !seen[k] {
+			seen[k] = true
+			bccList = append(bccList, &mail.Address{Address: addr})
+		}
+	}
+
+	return toList, ccList, bccList, dropped
 }
 
 // replyParent returns the ID of the message the outgoing message replies to.
@@ -166,14 +190,28 @@ func SendMail(c *protonmail.Client, u *protonmail.User, privateKeys openpgp.Enti
 		return err
 	}
 
-	subject, _ := mr.Header.Subject()
-	fromList, _ := mr.Header.AddressList("From")
-	toList, _ := mr.Header.AddressList("To")
-	ccList, _ := mr.Header.AddressList("Cc")
-	bccList, _ := mr.Header.AddressList("Bcc")
+	subject, err := mr.Header.Subject()
+	if err != nil {
+		return fmt.Errorf("failed to parse Subject: %v", err)
+	}
+	fromList, err := mr.Header.AddressList("From")
+	if err != nil {
+		return fmt.Errorf("failed to parse From: %v", err)
+	}
+	headerTo, err := mr.Header.AddressList("To")
+	if err != nil {
+		return fmt.Errorf("failed to parse To: %v", err)
+	}
+	headerCc, err := mr.Header.AddressList("Cc")
+	if err != nil {
+		return fmt.Errorf("failed to parse Cc: %v", err)
+	}
 
-	if len(bccList) == 0 {
-		bccList = bccFromRest(rcpt, append(toList, ccList...))
+	// The envelope is authoritative: the Bcc header field must not be sent
+	mr.Header.Del("Bcc")
+	toList, ccList, bccList, dropped := splitRecipients(rcpt, headerTo, headerCc)
+	if len(dropped) > 0 {
+		log.Printf("removing recipients missing from the envelope: %v", dropped)
 	}
 
 	if len(fromList) != 1 {

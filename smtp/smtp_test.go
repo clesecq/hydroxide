@@ -2,10 +2,12 @@ package smtp
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/emersion/go-message/mail"
 
 	"github.com/emersion/hydroxide/protonmail"
 )
@@ -77,5 +79,44 @@ func TestRecipientKey(t *testing.T) {
 				t.Error("external recipients must get cleartext")
 			}
 		})
+	}
+}
+
+func addressStrings(addrs []*mail.Address) []string {
+	var l []string
+	for _, addr := range addrs {
+		l = append(l, addr.Address)
+	}
+	return l
+}
+
+func TestSplitRecipients(t *testing.T) {
+	to := []*mail.Address{
+		{Name: "Alice", Address: "Alice@example.org"},
+		{Address: "header-only@example.org"},
+	}
+	cc := []*mail.Address{
+		{Address: "carol@example.org"},
+		{Address: "alice@example.org"},
+	}
+	rcpt := []string{"alice@example.org", "bob@example.org", "carol@example.org", "BOB@example.org"}
+
+	toList, ccList, bccList, dropped := splitRecipients(rcpt, to, cc)
+
+	for _, tc := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"to", addressStrings(toList), []string{"Alice@example.org"}},
+		{"cc", addressStrings(ccList), []string{"carol@example.org"}},
+		{"bcc", addressStrings(bccList), []string{"bob@example.org"}},
+		{"dropped", addressStrings(dropped), []string{"header-only@example.org"}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("%v: got %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+	if toList[0].Name != "Alice" {
+		t.Errorf("display name lost: %q", toList[0].Name)
 	}
 }
