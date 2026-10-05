@@ -25,7 +25,12 @@ type backend struct {
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
-	// TODO
+	// Nothing is cached from calendar events yet, but the channel must still
+	// be drained: the events receiver sends to all of a user's channels in
+	// turn and would block forever, stalling IMAP and CardDAV updates too.
+	for range events {
+		// TODO: handle calendar events
+	}
 }
 
 func (b *backend) CreateCalendar(ctx context.Context, calendar *caldav.Calendar) error {
