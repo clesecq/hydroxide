@@ -22,6 +22,11 @@ run on a server.
 > * [acheong08/ferroxide](https://github.com/acheong08/ferroxide): CalDAV
 >   support, proxy and Tor support (`-proxy-url`, `-tor`) and a custom
 >   configuration directory (`-config-home`).
+> * [kelno/hydroxide](https://github.com/kelno/hydroxide): attachment
+>   signatures ([emersion/hydroxide#323](https://github.com/emersion/hydroxide/pull/323)),
+>   CardDAV contacts encrypted with the user key instead of the address key, so
+>   Proton's clients can decrypt them ([emersion/hydroxide#327](https://github.com/emersion/hydroxide/pull/327)),
+>   and a Dockerfile.
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
