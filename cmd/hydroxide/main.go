@@ -27,8 +27,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/emersion/hydroxide/auth"
-	"github.com/emersion/hydroxide/captcha"
 	"github.com/emersion/hydroxide/caldav"
+	"github.com/emersion/hydroxide/captcha"
 	"github.com/emersion/hydroxide/carddav"
 	"github.com/emersion/hydroxide/config"
 	"github.com/emersion/hydroxide/events"
@@ -651,7 +651,7 @@ func main() {
 		eventsManager := events.NewManager()
 		log.Fatal(listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig))
 	case "carddav":
-		addr := *caldavHost + ":" + *caldavPort
+		addr := *carddavHost + ":" + *carddavPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
 		log.Fatal(listenAndServeCardDAV(addr, authManager, eventsManager, tlsConfig))
