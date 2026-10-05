@@ -376,9 +376,11 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 		return nil, 0, err
 	}
 
-	// Start with user keys (needed for contact encryption/signing)
-	// then append address keys (needed for email)
-	keyRing := append(openpgp.EntityList{}, userKeyRing...)
+	// Address keys come first: callers such as CalDAV sign with the first
+	// key of the ring and need an address key. User keys are appended
+	// afterwards for contact encryption/signing, and are looked up by the
+	// returned primary key ID.
+	var keyRing openpgp.EntityList
 	for _, addr := range addrs {
 		addrKeyRing, _, err := unlockKeyRing(addr.Keys, userKeyRing, keySalts, []byte(passphrase))
 		if err != nil {
@@ -388,6 +390,7 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 
 		keyRing = append(keyRing, addrKeyRing...)
 	}
+	keyRing = append(keyRing, userKeyRing...)
 
 	if len(keyRing) == 0 {
 		return nil, 0, fmt.Errorf("failed to unlock any key")
