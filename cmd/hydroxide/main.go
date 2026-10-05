@@ -1,43 +1,14 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-	"time"
-
-	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/ProtonMail/go-crypto/openpgp/armor"
-	imapserver "github.com/emersion/go-imap/server"
-	"github.com/emersion/go-mbox"
-	"github.com/emersion/go-smtp"
-	"github.com/google/uuid"
-	"golang.org/x/term"
 
 	"github.com/emersion/hydroxide/auth"
-	"github.com/emersion/hydroxide/caldav"
-	"github.com/emersion/hydroxide/captcha"
-	"github.com/emersion/hydroxide/carddav"
 	"github.com/emersion/hydroxide/config"
 	"github.com/emersion/hydroxide/events"
-	"github.com/emersion/hydroxide/exports"
-	"github.com/emersion/hydroxide/fetchmail"
-	imapbackend "github.com/emersion/hydroxide/imap"
-	"github.com/emersion/hydroxide/imports"
-	"github.com/emersion/hydroxide/protonmail"
-	smtpbackend "github.com/emersion/hydroxide/smtp"
 )
 
 const (
@@ -53,246 +24,6 @@ var (
 	proxyURL    string
 	tor         bool
 )
-
-func makeHTTPClientFromProxy(proxyArg string) (*http.Client, error) {
-	fmtProxy := ""
-	if tor {
-		un, err := uuid.NewRandom()
-		if err != nil {
-			return nil, err
-		}
-		// Tor requires socks5. To keep the same format as without tor, we allow
-		// the user to specify socks5:// in the proxy URL.
-		// But we remove it
-		proxyArg = strings.TrimPrefix(proxyArg, "socks5://")
-		fmtProxy = fmt.Sprintf("socks5://hydroxide_%s::@%s", un, proxyArg)
-	} else {
-		if !strings.Contains(proxyArg, "://") {
-			// Assume socks5:// if no scheme is provided
-			proxyArg = "socks5://" + proxyArg
-		}
-		fmtProxy = proxyArg
-	}
-
-	proxy, err := url.Parse(fmtProxy)
-	if err != nil {
-		return nil, err
-	}
-
-	tr := &http.Transport{
-		Proxy: http.ProxyURL(proxy),
-	}
-	return &http.Client{Transport: tr}, nil
-}
-
-func newClient() *protonmail.Client {
-	// Proton's API hands out a session cookie on /auth/info and expects it
-	// back on the requests that follow. Without a jar every request looks like
-	// a brand new, sessionless client, which the API treats with suspicion.
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		log.Fatalf("failed to create cookie jar: %v", err)
-	}
-
-	httpClient := &http.Client{}
-	if proxyURL != "" {
-		httpClient, err = makeHTTPClientFromProxy(proxyURL)
-		if err != nil {
-			log.Fatal("Error creating proxied http.Client: ", err)
-		}
-	}
-	httpClient.Jar = jar
-
-	return &protonmail.Client{
-		RootURL:    apiEndpoint,
-		AppVersion: appVersion,
-		Debug:      debug,
-		HTTPClient: httpClient,
-	}
-}
-
-func askPass(prompt string) ([]byte, error) {
-	f := os.Stdin
-	if !term.IsTerminal(int(f.Fd())) {
-		// This can happen if stdin is used for piping data
-		// TODO: the following assumes Unix
-		var err error
-		if f, err = os.Open("/dev/tty"); err != nil {
-			return nil, err
-		}
-		defer f.Close()
-	}
-	fmt.Fprintf(os.Stderr, "%v: ", prompt)
-	b, err := term.ReadPassword(int(f.Fd()))
-	if err == nil {
-		fmt.Fprintf(os.Stderr, "\n")
-	}
-	return b, err
-}
-
-func askBridgePass() (string, error) {
-	if v := os.Getenv("HYDROXIDE_BRIDGE_PASS"); v != "" {
-		return v, nil
-	}
-	b, err := askPass("Bridge password")
-	return string(b), err
-}
-
-// tlsConfigFor returns a copy of the TLS configuration advertising the ALPN
-// protocol of a given service (RFC 8314).
-//
-// The copy matters: the servers would otherwise share one config, and the HTTP
-// server sets NextProtos on it for HTTP/2. Clients asking for "imap" or "smtp"
-// then find no protocol in common and every connection is dropped.
-func tlsConfigFor(tlsConfig *tls.Config, proto string) *tls.Config {
-	if tlsConfig == nil {
-		return nil
-	}
-	c := tlsConfig.Clone()
-	c.NextProtos = []string{proto}
-	return c
-}
-
-func listenAndServeSMTP(addr string, debug bool, authManager *auth.Manager, tlsConfig *tls.Config) error {
-	be := smtpbackend.New(authManager)
-	s := smtp.NewServer(be)
-	s.Addr = addr
-	s.Domain = "localhost" // TODO: make this configurable
-	s.AllowInsecureAuth = tlsConfig == nil
-	s.TLSConfig = tlsConfigFor(tlsConfig, "smtp")
-	if debug {
-		s.Debug = os.Stdout
-	}
-
-	if s.TLSConfig != nil {
-		log.Println("SMTP server listening with TLS on", s.Addr)
-		return s.ListenAndServeTLS()
-	}
-
-	log.Println("SMTP server listening on", s.Addr)
-	return s.ListenAndServe()
-}
-
-func listenAndServeIMAP(addr string, debug bool, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config) error {
-	be := imapbackend.New(authManager, eventsManager)
-	s := imapserver.New(be)
-	s.Addr = addr
-	s.AllowInsecureAuth = tlsConfig == nil
-	s.TLSConfig = tlsConfigFor(tlsConfig, "imap")
-	if debug {
-		s.Debug = os.Stdout
-	}
-
-	if s.TLSConfig != nil {
-		log.Println("IMAP server listening with TLS on", s.Addr)
-		return s.ListenAndServeTLS()
-	}
-
-	log.Println("IMAP server listening on", s.Addr)
-	return s.ListenAndServe()
-}
-
-func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config) error {
-	handlers := make(map[string]http.Handler)
-
-	s := &http.Server{
-		Addr:      addr,
-		TLSConfig: tlsConfig,
-		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
-			resp.Header().Set("WWW-Authenticate", "Basic")
-
-			username, password, ok := req.BasicAuth()
-			if !ok {
-				resp.WriteHeader(http.StatusUnauthorized)
-				io.WriteString(resp, "Credentials are required")
-				return
-			}
-
-			c, privateKeys, _, err := authManager.Auth(username, password)
-			if err != nil {
-				if err == auth.ErrUnauthorized {
-					resp.WriteHeader(http.StatusUnauthorized)
-				} else {
-					resp.WriteHeader(http.StatusInternalServerError)
-				}
-				io.WriteString(resp, err.Error())
-				return
-			}
-
-			h, ok := handlers[username]
-			if !ok {
-				ch := make(chan *protonmail.Event)
-				eventsManager.Register(c, username, ch, nil)
-				h = caldav.NewHandler(c, privateKeys, username, ch)
-
-				handlers[username] = h
-			}
-
-			h.ServeHTTP(resp, req)
-		}),
-	}
-
-	log.Println("CalDAV server listening on", s.Addr)
-	return s.ListenAndServe()
-}
-
-func listenAndServeCardDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config) error {
-	handlers := make(map[string]http.Handler)
-
-	s := &http.Server{
-		Addr:      addr,
-		TLSConfig: tlsConfig,
-		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
-			resp.Header().Set("WWW-Authenticate", "Basic")
-
-			username, password, ok := req.BasicAuth()
-			if !ok {
-				resp.WriteHeader(http.StatusUnauthorized)
-				io.WriteString(resp, "Credentials are required")
-				return
-			}
-
-			c, privateKeys, primaryKeyID, err := authManager.Auth(username, password)
-			if err != nil {
-				if err == auth.ErrUnauthorized {
-					resp.WriteHeader(http.StatusUnauthorized)
-				} else {
-					resp.WriteHeader(http.StatusInternalServerError)
-				}
-				io.WriteString(resp, err.Error())
-				return
-			}
-
-			h, ok := handlers[username]
-			if !ok {
-				ch := make(chan *protonmail.Event)
-				eventsManager.Register(c, username, ch, nil)
-				h = carddav.NewHandler(c, privateKeys, primaryKeyID, ch)
-
-				handlers[username] = h
-			}
-
-			h.ServeHTTP(resp, req)
-		}),
-	}
-
-	if s.TLSConfig != nil {
-		log.Println("CardDAV server listening with TLS on", s.Addr)
-		return s.ListenAndServeTLS("", "")
-	}
-
-	log.Println("CardDAV server listening on", s.Addr)
-	return s.ListenAndServe()
-}
-
-func isMbox(br *bufio.Reader) (bool, error) {
-	prefix := []byte("From ")
-	b, err := br.Peek(len(prefix))
-	if err != nil {
-		return false, err
-	}
-	return bytes.Equal(b, prefix), nil
-}
 
 const usage = `usage: hydroxide [options...] <command>
 Commands:
@@ -364,13 +95,6 @@ func main() {
 
 	configHome := flag.String("config-home", "", "Path to the directory where hydroxide stores its configuration")
 
-	authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
-	exportSecretKeysCmd := flag.NewFlagSet("export-secret-keys", flag.ExitOnError)
-	importMessagesCmd := flag.NewFlagSet("import-messages", flag.ExitOnError)
-	exportMessagesCmd := flag.NewFlagSet("export-messages", flag.ExitOnError)
-	sendmailCmd := flag.NewFlagSet("sendmail", flag.ExitOnError)
-	fetchmailCmd := flag.NewFlagSet("fetchmail", flag.ExitOnError)
-
 	flag.Usage = func() {
 		fmt.Print(usage)
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
@@ -414,494 +138,63 @@ func main() {
 		config.SetConfigHome(*configHome)
 	}
 
+	serve := serveConfig{
+		smtpAddr:    *smtpHost + ":" + *smtpPort,
+		imapAddr:    *imapHost + ":" + *imapPort,
+		carddavAddr: *carddavHost + ":" + *carddavPort,
+		caldavAddr:  *caldavHost + ":" + *caldavPort,
+		tlsConfig:   tlsConfig,
+	}
+
 	cmd := flag.Arg(0)
+	args := flag.Args()
+	if len(args) > 0 {
+		args = args[1:]
+	}
 	switch cmd {
 	case "auth":
-		var captchaMode, captchaListen string
-		var captchaTimeout time.Duration
-		var noOpenBrowser bool
-		authCmd.StringVar(&captchaMode, "captcha-mode", string(captcha.ModeBrowser), "CAPTCHA behavior: browser, manual or disabled")
-		authCmd.StringVar(&captchaListen, "captcha-listen", captcha.DefaultListenAddr, "Local CAPTCHA callback address")
-		authCmd.DurationVar(&captchaTimeout, "captcha-timeout", captcha.DefaultTimeout, "Maximum time to wait for the CAPTCHA to be completed")
-		authCmd.BoolVar(&noOpenBrowser, "no-open-browser", false, "Print the CAPTCHA URL without trying to launch a browser")
-		captchaEndpoint := authCmd.String("captcha-endpoint", protonmail.CaptchaEndpoint, "API host serving the CAPTCHA challenge")
-		authCmd.Parse(flag.Args()[1:])
-		subcommand := authCmd.Arg(0)
-
-		if subcommand == "" {
-			fmt.Println("hydroxide auth")
-			fmt.Println()
-			fmt.Println("USAGE")
-			fmt.Println("  hydroxide auth <command> [flags]")
-			fmt.Println()
-			fmt.Println("AVAILABLE COMMANDS")
-			fmt.Println("  login       Log in to a Proton account")
-			fmt.Println("  logout      Log out of a Proton account")
-			fmt.Println("  status      View all logged in accounts")
-			break
-		}
-
-		if subcommand == "status" {
-			usernames, err := auth.ListUsernames()
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if len(usernames) == 0 {
-				fmt.Printf("No logged in user.\n")
-			} else {
-				fmt.Printf("%v logged in user(s):\n", len(usernames))
-				for _, u := range usernames {
-					fmt.Printf("- %v\n", u)
-				}
-			}
-			break
-		}
-
-		if subcommand == "logout" {
-			username := authCmd.Arg(1)
-			if username == "" {
-				log.Fatal("usage: hydroxide auth logout <username>")
-			}
-
-			err := auth.RemoveUser(username)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			fmt.Printf("Logged out user: %v\n", username)
-			break
-		}
-
-		if subcommand == "login" {
-			// Accept options after the subcommand too, e.g.
-			// "hydroxide auth login -captcha-mode manual <username>"
-			authCmd.Parse(authCmd.Args()[1:])
-			protonmail.CaptchaEndpoint = *captchaEndpoint
-			username := authCmd.Arg(0)
-			if username == "" {
-				log.Fatal("usage: hydroxide auth login [options...] <username>")
-			}
-
-			mode, err := captcha.ParseMode(captchaMode)
-			if err != nil {
-				log.Fatal(err)
-			}
-			captchaOpts := captcha.Options{
-				Mode:        mode,
-				ListenAddr:  captchaListen,
-				Timeout:     captchaTimeout,
-				OpenBrowser: !noOpenBrowser,
-				Output:      os.Stderr,
-			}
-
-			// Make sure Ctrl+C tears down the CAPTCHA server cleanly.
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-
-			c := newClient()
-
-			var a *protonmail.Auth
-			/*if cachedAuth, ok := auths[username]; ok {
-				var err error
-				a, err = c.AuthRefresh(a)
-				if err != nil {
-					// TODO: handle expired token error
-					log.Fatal(err)
-				}
-			}*/
-
-			var loginPassword string
-			if a == nil {
-				if pass, err := askPass("Password"); err != nil {
-					log.Fatal(err)
-				} else {
-					loginPassword = string(pass)
-				}
-
-				a, err = captcha.Authenticate(ctx, c, username, loginPassword, captchaOpts)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				if a.TwoFactor.Enabled != 0 {
-					if a.TwoFactor.TOTP != 1 {
-						log.Fatal("Only TOTP is supported as a 2FA method")
-					}
-
-					scanner := bufio.NewScanner(os.Stdin)
-					fmt.Printf("2FA TOTP code: ")
-					scanner.Scan()
-					code := scanner.Text()
-
-					scope, err := c.AuthTOTP(code)
-					if err != nil {
-						log.Fatal(err)
-					}
-					a.Scope = scope
-
-					// After 2FA the pre-2FA access token is rejected by the API; the
-					// /auth/2fa response carries only the elevated scope, not a new token.
-					// Refresh to obtain a usable full-scope token (and a rotated refresh token).
-					newAuth, err := c.AuthRefresh(a)
-					if err != nil {
-						log.Fatal(err)
-					}
-					a = newAuth
-				}
-			}
-
-			var mailboxPassword string
-			if a.PasswordMode == protonmail.PasswordSingle {
-				mailboxPassword = loginPassword
-			}
-			if mailboxPassword == "" {
-				prompt := "Password"
-				if a.PasswordMode == protonmail.PasswordTwo {
-					prompt = "Mailbox password"
-				}
-				if pass, err := askPass(prompt); err != nil {
-					log.Fatal(err)
-				} else {
-					mailboxPassword = string(pass)
-				}
-			}
-
-			keySalts, err := c.ListKeySalts()
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			_, _, err = c.Unlock(a, keySalts, mailboxPassword)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			secretKey, bridgePassword, err := auth.GeneratePassword()
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			err = auth.EncryptAndSave(&auth.CachedAuth{
-				Auth:            *a,
-				LoginPassword:   loginPassword,
-				MailboxPassword: mailboxPassword,
-				KeySalts:        keySalts,
-			}, username, secretKey)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			fmt.Println("Bridge password:", bridgePassword)
-			break
-		}
-
-		log.Fatal("usage: hydroxide auth <command>")
+		runAuth(args)
 	case "export-secret-keys":
-		exportSecretKeysCmd.Parse(flag.Args()[1:])
-		username := exportSecretKeysCmd.Arg(0)
-		if username == "" {
-			log.Fatal("usage: hydroxide export-secret-keys <username>")
-		}
-
-		bridgePassword, err := askBridgePass()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		_, privateKeys, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		wc, err := armor.Encode(os.Stdout, openpgp.PrivateKeyType, nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, key := range privateKeys {
-			if err := key.SerializePrivate(wc, nil); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		if err := wc.Close(); err != nil {
-			log.Fatal(err)
-		}
+		runExportSecretKeys(args)
 	case "import-messages":
-		importMessagesCmd.Parse(flag.Args()[1:])
-		username := importMessagesCmd.Arg(0)
-		archivePath := importMessagesCmd.Arg(1)
-		if username == "" {
-			log.Fatal("usage: hydroxide import-messages <username> [file]")
-		}
-
-		f := os.Stdin
-		if archivePath != "" {
-			f, err = os.Open(archivePath)
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer f.Close()
-		}
-
-		bridgePassword, err := askBridgePass()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		c, _, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		br := bufio.NewReader(f)
-		if ok, err := isMbox(br); err != nil {
-			log.Fatal(err)
-		} else if ok {
-			mr := mbox.NewReader(br)
-			for {
-				r, err := mr.NextMessage()
-				if err == io.EOF {
-					break
-				} else if err != nil {
-					log.Fatal(err)
-				}
-				if err := imports.ImportMessage(c, r); err != nil {
-					log.Fatal(err)
-				}
-			}
-		} else {
-			if err := imports.ImportMessage(c, br); err != nil {
-				log.Fatal(err)
-			}
-		}
+		runImportMessages(args)
 	case "export-messages":
-		// TODO: allow specifying multiple IDs
-		var convID, msgID string
-		exportMessagesCmd.StringVar(&convID, "conversation-id", "", "conversation ID")
-		exportMessagesCmd.StringVar(&msgID, "message-id", "", "message ID")
-		exportMessagesCmd.Parse(flag.Args()[1:])
-		username := exportMessagesCmd.Arg(0)
-		if (convID == "" && msgID == "") || username == "" {
-			log.Fatal("usage: hydroxide export-messages [-conversation-id <id>] [-message-id <id>] <username>")
-		}
-
-		bridgePassword, err := askBridgePass()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		c, privateKeys, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		mboxWriter := mbox.NewWriter(os.Stdout)
-
-		if convID != "" {
-			if err := exports.ExportConversationMbox(c, privateKeys, mboxWriter, convID); err != nil {
-				log.Fatal(err)
-			}
-		}
-		if msgID != "" {
-			if err := exports.ExportMessageMbox(c, privateKeys, mboxWriter, msgID); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		if err := mboxWriter.Close(); err != nil {
-			log.Fatal(err)
-		}
+		runExportMessages(args)
 	case "smtp":
-		addr := *smtpHost + ":" + *smtpPort
 		authManager := auth.NewManager(newClient)
-		log.Fatal(listenAndServeSMTP(addr, debug, authManager, tlsConfig))
+		log.Fatal(listenAndServeSMTP(serve.smtpAddr, debug, authManager, tlsConfig))
 	case "imap":
-		addr := *imapHost + ":" + *imapPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
-		log.Fatal(listenAndServeIMAP(addr, debug, authManager, eventsManager, tlsConfig))
+		log.Fatal(listenAndServeIMAP(serve.imapAddr, debug, authManager, eventsManager, tlsConfig))
 	case "caldav":
-		addr := *caldavHost + ":" + *caldavPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
-		log.Fatal(listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig))
+		log.Fatal(listenAndServeCalDAV(serve.caldavAddr, authManager, eventsManager, tlsConfig))
 	case "carddav":
-		addr := *carddavHost + ":" + *carddavPort
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
-		log.Fatal(listenAndServeCardDAV(addr, authManager, eventsManager, tlsConfig))
+		log.Fatal(listenAndServeCardDAV(serve.carddavAddr, authManager, eventsManager, tlsConfig))
 	case "serve":
-		smtpAddr := *smtpHost + ":" + *smtpPort
-		imapAddr := *imapHost + ":" + *imapPort
-		carddavAddr := *carddavHost + ":" + *carddavPort
-		caldavAddr := *caldavHost + ":" + *caldavPort
-
-		authManager := auth.NewManager(newClient)
-		eventsManager := events.NewManager()
-
-		done := make(chan error, 3)
-		if !*disableSMTP {
-			go func() {
-				done <- listenAndServeSMTP(smtpAddr, debug, authManager, tlsConfig)
-			}()
+		if *disableSMTP {
+			serve.smtpAddr = ""
 		}
-		if !*disableIMAP {
-			go func() {
-				done <- listenAndServeIMAP(imapAddr, debug, authManager, eventsManager, tlsConfig)
-			}()
+		if *disableIMAP {
+			serve.imapAddr = ""
 		}
-		if !*disableCardDAV {
-			go func() {
-				done <- listenAndServeCardDAV(carddavAddr, authManager, eventsManager, tlsConfig)
-			}()
+		if *disableCardDAV {
+			serve.carddavAddr = ""
 		}
-		if !*disableCalDAV {
-			go func() {
-				done <- listenAndServeCalDAV(caldavAddr, authManager, eventsManager, tlsConfig)
-			}()
+		if *disableCalDAV {
+			serve.caldavAddr = ""
 		}
-		log.Fatal(<-done)
+		runServe(serve)
 	case "sendmail":
-		username := flag.Arg(1)
-		if username == "" || flag.Arg(2) != "--" {
-			log.Fatal("usage: hydroxide sendmail <username> -- <args...>")
-		}
-
-		// TODO: other sendmail flags
-		var dotEOF bool
-		sendmailCmd.BoolVar(&dotEOF, "i", false, "don't treat a line with only a . character as the end of input")
-		sendmailCmd.Parse(flag.Args()[3:])
-		rcpt := sendmailCmd.Args()
-
-		bridgePassword, err := askBridgePass()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		c, privateKeys, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		u, err := c.GetCurrentUser()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		addrs, err := c.ListAddresses()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		err = smtpbackend.SendMail(c, u, privateKeys, addrs, rcpt, os.Stdin)
-		if err != nil {
-			log.Fatal(err)
-		}
+		runSendmail(args)
 	case "version":
 		fmt.Println(versionString())
 	case "fetchmail":
-		var folders, rcpt, idfile, smtpHost, smtpPort, smtpUser, envelopeFrom string
-		var all, markSeen, smtpStartTLS, lmtp bool
-		var deleteAfterDays int
-		var daemonInterval time.Duration
-
-		fetchmailCmd.StringVar(&folders, "folder", "Inbox", "comma-separated list of Proton folders to poll")
-		fetchmailCmd.BoolVar(&all, "all", false, "forward all messages in scope, ignoring the dedup state")
-		fetchmailCmd.StringVar(&idfile, "idfile", "", "path to the fetchmail state file (default: <config dir>/<username>-fetchids.json)")
-		fetchmailCmd.BoolVar(&markSeen, "markseen", false, "mark forwarded messages as read in Proton")
-		fetchmailCmd.IntVar(&deleteAfterDays, "deleteafter", 0, "delete messages from Proton this many days after they were forwarded (0 disables)")
-		fetchmailCmd.StringVar(&smtpHost, "smtp-host", "", "outbound relay hostname (required)")
-		fetchmailCmd.StringVar(&smtpPort, "smtp-port", "25", "outbound relay port")
-		fetchmailCmd.BoolVar(&smtpStartTLS, "smtp-starttls", true, "use STARTTLS with the outbound relay if offered (SMTP only, no effect with -lmtp)")
-		fetchmailCmd.StringVar(&smtpUser, "smtp-user", "", "username for outbound relay authentication (optional, unrelated to the bridge password)")
-		fetchmailCmd.BoolVar(&lmtp, "lmtp", false, "deliver via LMTP instead of SMTP to the relay at -smtp-host/-smtp-port (no STARTTLS support in this mode)")
-		fetchmailCmd.StringVar(&envelopeFrom, "envelope-from", "", "override the SMTP envelope sender (default: the message's own sender)")
-		fetchmailCmd.StringVar(&rcpt, "rcpt", "", "comma-separated list of recipients (default: the message's own To/Cc/Bcc)")
-		fetchmailCmd.DurationVar(&daemonInterval, "daemon", 0, "run continuously, polling every interval (e.g. 1m); default runs once and exits")
-		fetchmailCmd.Parse(flag.Args()[1:])
-
-		username := fetchmailCmd.Arg(0)
-		if username == "" || smtpHost == "" {
-			log.Fatal("usage: hydroxide fetchmail -smtp-host <host> [options...] <username>")
-		}
-
-		labels, err := fetchmail.ResolveFolders(strings.Split(folders, ","))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if idfile == "" {
-			idfile, err = config.Path(username + "-fetchids.json")
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		var rcptList []string
-		if rcpt != "" {
-			rcptList = strings.Split(rcpt, ",")
-		}
-
-		// The outbound SMTP relay password is a separate secret from the
-		// Proton bridge password below: it authenticates to whatever relay
-		// -smtp-host points at, and is only needed if -smtp-user is set.
-		var smtpPass string
-		if smtpUser != "" {
-			if v := os.Getenv("HYDROXIDE_FETCHMAIL_SMTP_PASS"); v != "" {
-				smtpPass = v
-			} else {
-				pass, err := askPass("SMTP relay password")
-				if err != nil {
-					log.Fatal(err)
-				}
-				smtpPass = string(pass)
-			}
-		}
-
-		// The Proton bridge password is always required, regardless of
-		// whether the SMTP relay needs authentication.
-		bridgePassword, err := askBridgePass()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		c, privateKeys, _, err := auth.NewManager(newClient).Auth(username, bridgePassword)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		cfg := &fetchmail.Config{
-			Folders:         labels,
-			All:             all,
-			MarkSeen:        markSeen,
-			DeleteAfterDays: deleteAfterDays,
-			SMTPHost:        smtpHost,
-			SMTPPort:        smtpPort,
-			SMTPStartTLS:    smtpStartTLS,
-			SMTPUser:        smtpUser,
-			SMTPPass:        smtpPass,
-			LMTP:            lmtp,
-			EnvelopeFrom:    envelopeFrom,
-			Rcpt:            rcptList,
-		}
-
-		if daemonInterval <= 0 {
-			// Cron mode: run a single pass and exit. The state file at
-			// idfile makes repeated invocations (e.g. from cron) safe.
-			if err := fetchmail.RunOnce(c, privateKeys, idfile, cfg); err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			log.Printf("fetchmail running as a daemon, polling every %v", daemonInterval)
-			for {
-				if err := fetchmail.RunOnce(c, privateKeys, idfile, cfg); err != nil {
-					log.Println("fetchmail pass failed:", err)
-				}
-				time.Sleep(daemonInterval)
-			}
-		}
+		runFetchmail(args)
 	default:
 		fmt.Print(usage)
 		if cmd != "help" {
