@@ -136,6 +136,11 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 		}),
 	}
 
+	if s.TLSConfig != nil {
+		log.Println("CalDAV server listening with TLS on", s.Addr)
+		return s.ListenAndServeTLS("", "")
+	}
+
 	log.Println("CalDAV server listening on", s.Addr)
 	return s.ListenAndServe()
 }
