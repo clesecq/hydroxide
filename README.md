@@ -81,7 +81,11 @@ setup information.
 
 ### Installing
 
-Start by installing hydroxide:
+Pre-built binaries for Linux, macOS and Windows are attached to each
+[release](https://github.com/clesecq/hydroxide/releases), along with a
+`SHA256SUMS` file to verify them.
+
+Or build hydroxide from source:
 
 ```shell
 git clone https://github.com/clesecq/hydroxide.git
