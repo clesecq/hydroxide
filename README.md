@@ -30,6 +30,10 @@ run on a server.
 > * [kLeZ/hydroxide](https://github.com/kLeZ/hydroxide): refresh the access
 >   token after the 2FA step, so logins with two-factor authentication no longer
 >   fail with `[401] Invalid access token` (emersion/hydroxide#345).
+> * [BMGY396/hydroxide](https://github.com/BMGY396/hydroxide): consume Proton
+>   event notifications in the CalDAV backend. Without this, the first event
+>   blocked the user's event receiver, and IMAP and CardDAV stopped getting
+>   updates under `hydroxide serve`.
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
