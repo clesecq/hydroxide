@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # git describe needs the tags and the history leading to them.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -29,8 +32,11 @@ jobs:
             exit 1
           fi
 
+      - name: Set version
+        run: echo "VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
       - name: Build
-        run: go build -v ./...
+        run: go build -v -ldflags "-X main.version=$VERSION" ./...
 
       - name: Test
         run: go test -race ./...
@@ -41,5 +47,5 @@ jobs:
         run: |
           for target in darwin/amd64 darwin/arm64 windows/amd64; do
             echo "==> $target"
-            GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+            GOOS=${target%/*} GOARCH=${target#*/} go build -ldflags "-X main.version=$VERSION" ./...
           done
