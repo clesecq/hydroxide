@@ -5,20 +5,23 @@
 A third-party, open-source ProtonMail bridge. For power users only, designed to
 run on a server.
 
-> ### ⚠️ Heads up!
->
-> Upstream has [migrated to Codeberg](https://codeberg.org/emersion/hydroxide).
-
 > ### About this fork
 >
-> Proton now answers many logins with a CAPTCHA challenge, which upstream
-> hydroxide can't complete — `hydroxide auth` just fails. This fork adds an
-> interactive flow for it, described under [Human verification](#human-verification).
+> This is [clesecq/hydroxide](https://github.com/clesecq/hydroxide), a fork of
+> [hydroxide](https://codeberg.org/emersion/hydroxide) (upstream, now hosted on
+> Codeberg). It combines patches from these forks:
 >
-> It also fixes TLS ALPN negotiation for the IMAP and SMTP servers (they shared
-> the HTTP server's config, so clients offering `imap`/`smtp` were dropped during
-> the handshake) and stops `-debug` from printing passwords, SRP proofs, session
-> tokens and private keys to the log.
+> * [Kin69/hydroxide-captcha-fix](https://github.com/Kin69/hydroxide-captcha-fix):
+>   Proton now answers many logins with a CAPTCHA challenge, which upstream
+>   hydroxide can't complete — `hydroxide auth` just fails. This adds an
+>   interactive flow for it, described under [Human verification](#human-verification).
+>   It also fixes TLS ALPN negotiation for the IMAP and SMTP servers (they
+>   shared the HTTP server's config, so clients offering `imap`/`smtp` were
+>   dropped during the handshake) and stops `-debug` from printing passwords,
+>   SRP proofs, session tokens and private keys to the log.
+> * [acheong08/ferroxide](https://github.com/acheong08/ferroxide): CalDAV
+>   support, proxy and Tor support (`-proxy-url`, `-tor`) and a custom
+>   configuration directory (`-config-home`).
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
@@ -54,8 +57,8 @@ setup information.
 Start by installing hydroxide:
 
 ```shell
-git clone https://github.com/Kin69/hydroxide-captcha-fix.git
-cd hydroxide-captcha-fix
+git clone https://github.com/clesecq/hydroxide.git
+cd hydroxide
 go build ./cmd/hydroxide
 ```
 
