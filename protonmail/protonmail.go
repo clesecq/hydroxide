@@ -26,10 +26,13 @@ type resp struct {
 }
 
 func (r *resp) Err() error {
-	if err := r.RawAPIError; err != nil {
+	// Details alone doesn't make a response an error: only report one when the
+	// API actually returned an error message.
+	if err := r.RawAPIError; err != nil && err.Message != "" {
 		return &APIError{
 			Code:    r.Code,
 			Message: err.Message,
+			Details: err.Details,
 		}
 	}
 	return nil
@@ -41,11 +44,15 @@ type maybeError interface {
 
 type RawAPIError struct {
 	Message string `json:"Error"`
+	// Details holds request-specific error details, e.g. a human verification
+	// challenge. Its contents vary from one endpoint to another.
+	Details json.RawMessage `json:"Details,omitempty"`
 }
 
 type APIError struct {
 	Code    int
 	Message string
+	Details json.RawMessage
 }
 
 func (err *APIError) Error() string {
@@ -108,7 +115,7 @@ func (c *Client) newJSONRequest(method, path string, body interface{}) (*http.Re
 	}
 
 	if c.Debug {
-		log.Print(string(b))
+		log.Print(string(redactJSON(b)))
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -173,7 +180,7 @@ func (c *Client) doJSON(req *http.Request, respData interface{}) error {
 
 	if c.Debug {
 		log.Printf("<< %v %v", req.Method, req.URL.Path)
-		log.Printf("%#v", respData)
+		log.Printf("%s", redactValueOf(respData))
 	}
 
 	if maybeError, ok := respData.(maybeError); ok {

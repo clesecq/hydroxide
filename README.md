@@ -5,6 +5,21 @@
 A third-party, open-source ProtonMail bridge. For power users only, designed to
 run on a server.
 
+> ### ⚠️ Heads up!
+>
+> Upstream has [migrated to Codeberg](https://codeberg.org/emersion/hydroxide).
+
+> ### About this fork
+>
+> Proton now answers many logins with a CAPTCHA challenge, which upstream
+> hydroxide can't complete — `hydroxide auth` just fails. This fork adds an
+> interactive flow for it, described under [Human verification](#human-verification).
+>
+> It also fixes TLS ALPN negotiation for the IMAP and SMTP servers (they shared
+> the HTTP server's config, so clients offering `imap`/`smtp` were dropped during
+> the handshake) and stops `-debug` from printing passwords, SRP proofs, session
+> tokens and private keys to the log.
+
 hydroxide supports CardDAV, IMAP and SMTP.
 
 Rationale:
@@ -39,7 +54,8 @@ setup information.
 Start by installing hydroxide:
 
 ```shell
-git clone https://github.com/emersion/hydroxide.git
+git clone https://github.com/Kin69/hydroxide-captcha-fix.git
+cd hydroxide-captcha-fix
 go build ./cmd/hydroxide
 ```
 
@@ -56,6 +72,71 @@ needed when configuring your e-mail client.
 
 Your ProtonMail credentials are stored on disk encrypted with this bridge
 password (a 32-byte random password generated when logging in).
+
+### Human verification
+
+Proton often answers `hydroxide auth` with a CAPTCHA challenge (API error 9001)
+before it will accept a login. hydroxide does not solve, bypass or weaken that
+challenge — it is served, rendered and scored by Proton throughout. hydroxide
+only points you at it and carries its result back to the login request.
+
+When a challenge comes up, `hydroxide auth` starts a single-use helper server on
+`127.0.0.1:8765`, opens your browser on it, and waits. The page walks you
+through four steps:
+
+1. Copy the one-line snippet it shows you.
+2. Open Proton's challenge in a new tab, using the button on the page.
+3. In that tab, open the developer console (<kbd>F12</kbd> → "Console") and
+   paste the snippet. Firefox and Chrome make you type `allow pasting` first.
+   Press <kbd>Enter</kbd> — it prints `undefined`, which is correct. Now solve
+   the CAPTCHA; a text box appears at the top of the tab with the result already
+   selected. Copy it.
+4. Paste that result back into the hydroxide page and press "Continue".
+
+The console step is needed because Proton only lets its own web apps embed the
+challenge, so it can't be shown inline and its result has to be moved by hand.
+
+Once you confirm, authentication is replayed with the challenge result and the
+login continues as usual. The helper server shuts down immediately afterwards.
+
+#### Headless servers
+
+There's no browser on a server, so forward the helper's port over SSH and use
+`manual` mode, which prints the URL instead of trying to launch anything:
+
+```shell
+ssh -L 8765:127.0.0.1:8765 you@your-server
+hydroxide auth -captcha-mode manual <username>
+```
+
+Then open the printed URL on your local machine.
+
+Don't bind the helper to a public address to avoid the tunnel. Anyone who can
+reach it can complete the verification on your behalf, and hydroxide will warn
+you loudly if you do.
+
+#### Options
+
+These apply to `hydroxide auth` only:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-captcha-mode` | `browser` | `browser` opens the helper page, `manual` only prints its URL, `disabled` reports the API error instead |
+| `-captcha-listen` | `127.0.0.1:8765` | Address of the helper server. Keep it on loopback |
+| `-captcha-timeout` | `10m` | How long to wait for you to finish |
+| `-no-open-browser` | | Print the URL without trying to launch a browser |
+| `-captcha-endpoint` | `https://mail-api.proton.me` | API host serving the challenge |
+
+`-captcha-endpoint` is worth knowing about: the host must serve both
+`/core/v4/captcha` and the widget's assets under `/captcha/v1/assets/`. Several
+Proton hosts serve the first but not the second, and the challenge then loads as
+an empty box. hydroxide checks this before sending you to it and tells you if
+the host looks wrong.
+
+Verification can only be completed interactively, so a long-running `hydroxide
+imap`/`smtp`/`carddav` process that hits a challenge while refreshing its
+session can't resolve it on its own. It will tell you to run `hydroxide auth`
+again.
 
 ## Usage
 
@@ -103,10 +184,16 @@ hydroxide imap
 
 ## Contributing
 
-This project is [casually maintained]: pull requests are welcome, but the
-maintainer is busy with lots of other things and will be slow to respond.
+Upstream is [casually maintained]: pull requests are welcome, but the maintainer
+is busy with lots of other things and will be slow to respond. Also see
+[CONTRIBUTING.md].
 
-Also see [CONTRIBUTING.md].
+For the changes specific to this fork, open an issue or a pull request here.
+
+## Support
+
+If this fork saved you some time, you can buy me a coffee:
+[ko-fi.com/kin69_](https://ko-fi.com/kin69_)
 
 ## License
 

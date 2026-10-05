@@ -48,6 +48,12 @@ func (resp *AuthInfoResp) authInfo() *AuthInfo {
 }
 
 func (c *Client) AuthInfo(username string) (*AuthInfo, error) {
+	return c.AuthInfoWithVerification(username, nil)
+}
+
+// AuthInfoWithVerification is AuthInfo, replaying the request with the result
+// of a human verification challenge completed by the user.
+func (c *Client) AuthInfoWithVerification(username string, hv *HumanVerification) (*AuthInfo, error) {
 	reqData := &authInfoReq{
 		Username: username,
 	}
@@ -56,6 +62,7 @@ func (c *Client) AuthInfo(username string) (*AuthInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	hv.setRequestHeaders(req)
 
 	var respData AuthInfoResp
 	if err := c.doJSON(req, &respData); err != nil {
@@ -110,11 +117,27 @@ func (resp *authResp) auth() *Auth {
 }
 
 func (c *Client) Auth(username, password string, info *AuthInfo) (*Auth, error) {
+	return c.AuthWithVerification(username, password, info, nil)
+}
+
+// AuthWithVerification is Auth, replaying the request with the result of a
+// human verification challenge completed by the user.
+func (c *Client) AuthWithVerification(username, password string, info *AuthInfo, hv *HumanVerification) (*Auth, error) {
 	if info == nil {
-		var err error
-		if info, err = c.AuthInfo(username); err != nil {
+		// The challenge token is single-use: only attach it to the request
+		// that asked for verification, as Proton's own clients do. Spending it
+		// on /auth/info makes the /auth request fail with error 12087.
+		newInfo, err := c.AuthInfo(username)
+		if apiErr, ok := err.(*APIError); ok && apiErr.IsHumanVerificationRequired() && hv != nil {
+			// /auth/info is the one that wants verification: replay it with
+			// the completed challenge, which consumes the token.
+			newInfo, err = c.AuthInfoWithVerification(username, hv)
+			hv = nil
+		}
+		if err != nil {
 			return nil, err
 		}
+		info = newInfo
 	}
 
 	proofs, err := srp([]byte(password), info)
@@ -133,6 +156,7 @@ func (c *Client) Auth(username, password string, info *AuthInfo) (*Auth, error) 
 	if err != nil {
 		return nil, err
 	}
+	hv.setRequestHeaders(req)
 
 	var respData authResp
 	if err := c.doJSON(req, &respData); err != nil {

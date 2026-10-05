@@ -130,7 +130,11 @@ func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string)
 		}
 
 		auth, err = c.Auth(username, cachedAuth.LoginPassword, authInfo)
-		if err != nil {
+		if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.IsHumanVerificationRequired() {
+			// Human verification can't be completed from a background
+			// session: it needs a browser and a human.
+			return nil, fmt.Errorf("cannot re-authenticate: Proton requires human verification, please run `hydroxide auth %v` again", username)
+		} else if err != nil {
 			return nil, fmt.Errorf("cannot re-authenticate: %v", err)
 		}
 
