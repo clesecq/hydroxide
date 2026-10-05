@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	imapserver "github.com/emersion/go-imap/server"
@@ -91,6 +92,7 @@ type newDAVHandlerFunc func(c *protonmail.Client, privateKeys openpgp.EntityList
 // davAuthHandler authenticates requests with HTTP basic auth and dispatches
 // them to a handler created once per user.
 func davAuthHandler(authManager *auth.Manager, eventsManager *events.Manager, newHandler newDAVHandlerFunc) http.Handler {
+	var mu sync.Mutex
 	handlers := make(map[string]http.Handler)
 
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
@@ -114,6 +116,9 @@ func davAuthHandler(authManager *auth.Manager, eventsManager *events.Manager, ne
 			return
 		}
 
+		// Requests are served concurrently: the lock also keeps two first
+		// requests from registering the same user twice.
+		mu.Lock()
 		h, ok := handlers[username]
 		if !ok {
 			ch := make(chan *protonmail.Event)
@@ -122,6 +127,7 @@ func davAuthHandler(authManager *auth.Manager, eventsManager *events.Manager, ne
 
 			handlers[username] = h
 		}
+		mu.Unlock()
 
 		h.ServeHTTP(resp, req)
 	})
