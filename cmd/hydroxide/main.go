@@ -305,6 +305,7 @@ Commands:
 	sendmail <username> -- <args...>	sendmail(1) interface
 	serve			Run all servers
 	smtp			Run hydroxide as an SMTP server
+	version			Print hydroxide version
 
 AUTH COMMANDS
 	login:       Log in to a Proton account
@@ -767,6 +768,8 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+	case "version":
+		fmt.Println(versionString())
 	default:
 		fmt.Print(usage)
 		if cmd != "help" {
