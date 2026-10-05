@@ -39,6 +39,9 @@ run on a server.
 >   (time-range queries, events with no author, consistent ETags after PUT,
 >   MKCALENDAR answered with 501) and event attendees: invitations and RSVP
 >   status.
+> * [daald/hydroxide-fetchmail](https://github.com/daald/hydroxide-fetchmail):
+>   `hydroxide fetchmail`, which forwards new mail from ProtonMail folders to an
+>   SMTP or LMTP server, once (for cron) or as a daemon.
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
@@ -249,7 +252,9 @@ you don't want to be prompted for it.
 Pass `-lmtp` to deliver via LMTP instead of SMTP (e.g. straight to a local
 Dovecot/Cyrus mailbox) — still to the host/port set by `-smtp-host`/
 `-smtp-port`. LMTP mode doesn't support `-smtp-starttls`, since it's meant for
-trusted local delivery rather than relaying over the network.
+trusted local delivery rather than relaying over the network. With `-lmtp`,
+`-smtp-user` sends the relay password unencrypted, so only use it over a
+trusted connection.
 
 ## Docker
 
