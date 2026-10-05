@@ -27,6 +27,9 @@ run on a server.
 >   CardDAV contacts encrypted with the user key instead of the address key, so
 >   Proton's clients can decrypt them ([emersion/hydroxide#327](https://github.com/emersion/hydroxide/pull/327)),
 >   and a Dockerfile.
+> * [kLeZ/hydroxide](https://github.com/kLeZ/hydroxide): refresh the access
+>   token after the 2FA step, so logins with two-factor authentication no longer
+>   fail with `[401] Invalid access token` (emersion/hydroxide#345).
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
