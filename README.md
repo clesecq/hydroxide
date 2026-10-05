@@ -301,11 +301,6 @@ is busy with lots of other things and will be slow to respond. Also see
 
 For the changes specific to this fork, open an issue or a pull request here.
 
-## Support
-
-If this fork saved you some time, you can buy me a coffee:
-[ko-fi.com/kin69_](https://ko-fi.com/kin69_)
-
 ## License
 
 MIT
