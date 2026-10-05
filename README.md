@@ -171,6 +171,12 @@ hydroxide can be used in multiple modes.
 > Don't start hydroxide multiple times, instead you can use `hydroxide serve`.
 > This requires ports 1025 (smtp), 1143 (imap), 8080 (carddav) and 8081 (caldav).
 
+All servers listen on `127.0.0.1` by default. Use `-host` to change it for all
+of them at once, e.g. `hydroxide -host 127.0.0.2 serve` to keep the default
+ports when another program already uses them on `127.0.0.1`. The per-server
+`-smtp-host`, `-imap-host`, `-carddav-host` and `-caldav-host` options take
+precedence over `-host`.
+
 ### SMTP
 
 To run hydroxide as an SMTP server:
@@ -270,7 +276,7 @@ volume. Log in interactively first, then run the servers:
 ```shell
 docker run --rm -it -v hydroxide:/root/.config/hydroxide hydroxide auth login <username>
 docker run -d -v hydroxide:/root/.config/hydroxide -p 127.0.0.1:1025:1025 -p 127.0.0.1:1143:1143 \
-	hydroxide -smtp-host 0.0.0.0 -imap-host 0.0.0.0 serve
+	hydroxide -host 0.0.0.0 serve
 ```
 
 Inside the container, hydroxide must listen on `0.0.0.0` for the published ports

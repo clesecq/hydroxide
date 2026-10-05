@@ -340,6 +340,8 @@ func main() {
 	flag.StringVar(&proxyURL, "proxy-url", "", "HTTP proxy URL (e.g. socks5://127.0.0.1:1080)")
 	flag.BoolVar(&tor, "tor", false, "If set, connect to ProtonMail over Tor")
 
+	listenHost := flag.String("host", "", "Hostname on which all servers listen, overridden by the per-server -*-host options (default 127.0.0.1)")
+
 	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which hydroxide listens, defaults to 127.0.0.1")
 	smtpPort := flag.String("smtp-port", "1025", "SMTP port on which hydroxide listens, defaults to 1025")
 	disableSMTP := flag.Bool("disable-smtp", false, "Disable SMTP for hydroxide serve")
@@ -376,6 +378,23 @@ func main() {
 	}
 
 	flag.Parse()
+
+	if *listenHost != "" {
+		explicit := make(map[string]bool)
+		flag.Visit(func(f *flag.Flag) {
+			explicit[f.Name] = true
+		})
+		for name, host := range map[string]*string{
+			"smtp-host":    smtpHost,
+			"imap-host":    imapHost,
+			"carddav-host": carddavHost,
+			"caldav-host":  caldavHost,
+		} {
+			if !explicit[name] {
+				*host = *listenHost
+			}
+		}
+	}
 
 	if tor && proxyURL == "" {
 		log.Fatal("Need -proxy-url to connect to ProtonMail over Tor")
