@@ -66,7 +66,7 @@ Then you'll need to login to ProtonMail via hydroxide, so that hydroxide can
 retrieve e-mails from ProtonMail. You can do so with this command:
 
 ```shell
-hydroxide auth <username>
+hydroxide auth login <username>
 ```
 
 Once you're logged in, a "bridge password" will be printed. Don't close your
@@ -76,14 +76,17 @@ needed when configuring your e-mail client.
 Your ProtonMail credentials are stored on disk encrypted with this bridge
 password (a 32-byte random password generated when logging in).
 
+To list logged in accounts, run `hydroxide auth status`. To log out of an
+account and remove its stored credentials, run `hydroxide auth logout <username>`.
+
 ### Human verification
 
-Proton often answers `hydroxide auth` with a CAPTCHA challenge (API error 9001)
+Proton often answers `hydroxide auth login` with a CAPTCHA challenge (API error 9001)
 before it will accept a login. hydroxide does not solve, bypass or weaken that
 challenge — it is served, rendered and scored by Proton throughout. hydroxide
 only points you at it and carries its result back to the login request.
 
-When a challenge comes up, `hydroxide auth` starts a single-use helper server on
+When a challenge comes up, `hydroxide auth login` starts a single-use helper server on
 `127.0.0.1:8765`, opens your browser on it, and waits. The page walks you
 through four steps:
 
@@ -109,7 +112,7 @@ There's no browser on a server, so forward the helper's port over SSH and use
 
 ```shell
 ssh -L 8765:127.0.0.1:8765 you@your-server
-hydroxide auth -captcha-mode manual <username>
+hydroxide auth login -captcha-mode manual <username>
 ```
 
 Then open the printed URL on your local machine.
@@ -120,7 +123,7 @@ you loudly if you do.
 
 #### Options
 
-These apply to `hydroxide auth` only:
+These apply to `hydroxide auth login` only:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -138,7 +141,7 @@ the host looks wrong.
 
 Verification can only be completed interactively, so a long-running `hydroxide
 imap`/`smtp`/`carddav` process that hits a challenge while refreshing its
-session can't resolve it on its own. It will tell you to run `hydroxide auth`
+session can't resolve it on its own. It will tell you to run `hydroxide auth login`
 again.
 
 ## Usage
