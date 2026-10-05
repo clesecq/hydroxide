@@ -417,7 +417,7 @@ summary { cursor: pointer; }
 <h1>{{.Title}}</h1>
 {{if .Error}}
 <p class="error">{{.Error}}</p>
-<p class="note">Go back to your terminal and start <code>hydroxide auth</code> again.</p>
+<p class="note">Go back to your terminal and start <code>hydroxide auth login</code> again.</p>
 {{else if .Done}}
 <p>Thanks. You can close this tab and go back to your terminal.</p>
 {{else}}

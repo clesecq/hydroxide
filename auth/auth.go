@@ -133,7 +133,7 @@ func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string)
 		if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.IsHumanVerificationRequired() {
 			// Human verification can't be completed from a background
 			// session: it needs a browser and a human.
-			return nil, fmt.Errorf("cannot re-authenticate: Proton requires human verification, please run `hydroxide auth %v` again", username)
+			return nil, fmt.Errorf("cannot re-authenticate: Proton requires human verification, please run `hydroxide auth login %v` again", username)
 		} else if err != nil {
 			return nil, fmt.Errorf("cannot re-authenticate: %v", err)
 		}
@@ -160,6 +160,24 @@ func ListUsernames() ([]string, error) {
 		l = append(l, username)
 	}
 	return l, nil
+}
+
+func RemoveUser(username string) error {
+	auths, err := readCachedAuths()
+	if err != nil {
+		return err
+	}
+
+	if auths == nil {
+		return fmt.Errorf("user %q not found", username)
+	}
+
+	if _, ok := auths[username]; !ok {
+		return fmt.Errorf("user %q not found", username)
+	}
+
+	delete(auths, username)
+	return saveAuths(auths)
 }
 
 func GeneratePassword() (secretKey *[32]byte, password string, err error) {
