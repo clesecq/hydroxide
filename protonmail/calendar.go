@@ -3,6 +3,7 @@ package protonmail
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -887,10 +888,24 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 	return &data, member.ID, nil
 }
 
+// calendarEventNotFoundCode is the ProtonMail API error code returned when an
+// event ID does not exist (e.g. when a CalDAV client PUTs a brand new event
+// under a UID it picked). It is used to distinguish a create from an update.
+const calendarEventNotFoundCode = 2061
+
+// isEventNotFoundErr reports whether err (possibly wrapped) is a ProtonMail API
+// error indicating the calendar event does not exist. GetCalendarEvent wraps
+// the APIError with fmt.Errorf("...%w..."), so a plain type assertion fails;
+// errors.As is required to unwrap it.
+func isEventNotFoundErr(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == calendarEventNotFoundCode
+}
+
 func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Event, userKr openpgp.KeyRing) (*CalendarEvent, error) {
 	oldEvent, err := c.GetCalendarEvent(calID, eventID)
 	isCreate := false
-	if apiErr, ok := err.(*APIError); ok && apiErr.Code == 2061 {
+	if isEventNotFoundErr(err) {
 		isCreate = true
 	} else if err != nil {
 		return nil, fmt.Errorf("UpdateCalendarEvent: could not get old calendar event: (%w)", err)
