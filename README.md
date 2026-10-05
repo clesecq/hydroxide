@@ -34,6 +34,11 @@ run on a server.
 >   event notifications in the CalDAV backend. Without this, the first event
 >   blocked the user's event receiver, and IMAP and CardDAV stopped getting
 >   updates under `hydroxide serve`.
+> * [cjroth/hydroxide](https://github.com/cjroth/hydroxide): CalDAV fixes from
+>   its port of [emersion/hydroxide#282](https://github.com/emersion/hydroxide/pull/282)
+>   (time-range queries, events with no author, consistent ETags after PUT,
+>   MKCALENDAR answered with 501) and event attendees: invitations and RSVP
+>   status.
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
