@@ -42,6 +42,13 @@ run on a server.
 > * [daald/hydroxide-fetchmail](https://github.com/daald/hydroxide-fetchmail):
 >   `hydroxide fetchmail`, which forwards new mail from ProtonMail folders to an
 >   SMTP or LMTP server, once (for cron) or as a daemon.
+> * [xchacha20-poly1305/hydroxide](https://github.com/xchacha20-poly1305/hydroxide):
+>   SMTP fixes: messages are delivered to the envelope recipients, external
+>   recipients that publish a key are sent cleartext instead of being
+>   rejected, replies keep their threading when the parent isn't in the
+>   mailbox, the MIME tree is walked to find the body and attachments (inline
+>   patches from `git format-patch --inline` are kept), and the sender address
+>   is matched case-insensitively. Rate-limited API requests are retried.
 
 hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
 
