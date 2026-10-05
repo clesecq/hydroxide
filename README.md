@@ -196,6 +196,26 @@ For now, it only supports unencrypted local connections.
 hydroxide imap
 ```
 
+## Docker
+
+Build the image from a checkout:
+
+```shell
+docker build --build-arg VERSION=$(git describe --tags --always) -t hydroxide .
+```
+
+Credentials are stored in `/root/.config/hydroxide`, so keep that directory in a
+volume. Log in interactively first, then run the servers:
+
+```shell
+docker run --rm -it -v hydroxide:/root/.config/hydroxide hydroxide auth login <username>
+docker run -d -v hydroxide:/root/.config/hydroxide -p 127.0.0.1:1025:1025 -p 127.0.0.1:1143:1143 \
+	hydroxide -smtp-host 0.0.0.0 -imap-host 0.0.0.0 serve
+```
+
+Inside the container, hydroxide must listen on `0.0.0.0` for the published ports
+to reach it. Publish them on `127.0.0.1` only, unless you also set up TLS.
+
 ## Contributing
 
 Upstream is [casually maintained]: pull requests are welcome, but the maintainer
